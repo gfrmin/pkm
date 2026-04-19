@@ -20,6 +20,7 @@ Coverage map:
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -29,6 +30,7 @@ from pkm.cache import (
     META_FORMAT_VERSION,
     CacheInconsistencyError,
     CacheWriteOutcome,
+    _hash_config,
     artifact_dir,
     content_file,
     content_path_rel,
@@ -38,7 +40,7 @@ from pkm.cache import (
     write_artifact,
 )
 from pkm.catalogue import open_catalogue
-from pkm.hashing import compute_cache_key
+from pkm.hashing import canonical_json, compute_cache_key
 from pkm.producer import ProducerResult
 
 # --- Helpers ---------------------------------------------------------------
@@ -347,3 +349,43 @@ def test_read_raises_when_row_exists_but_content_missing(
         CacheInconsistencyError
     ):
         read_artifact(migrated_root, conn, cache_key)
+
+
+# --- Cross-module consistency: producer_config_hash ----------------------
+
+def test_hash_config_matches_the_recipe_used_in_compute_cache_key() -> None:
+    """The ``producer_config_hash`` computed by ``cache._hash_config``
+    MUST match the recipe used inside ``pkm.hashing.compute_cache_key``
+    (both are SHA-256 of the canonical JSON form). A divergence would
+    mean that two producers with identical configs receive different
+    cache keys depending on which code path computed the hash — a
+    silent correctness bug.
+
+    Whitebox test of ``_hash_config``: the private member is imported
+    deliberately to pin the cross-module invariant. If the two
+    recipes are ever factored into a shared helper, this test
+    becomes redundant and can be removed.
+    """
+    configs: list[dict] = [
+        {},
+        {"a": 1},
+        {"ocr": True, "lang": "eng"},
+        {"nested": {"deep": {"value": 42}}},
+        {"unicode": "café → 🦀"},
+        {"list": [1, 2, {"x": "y"}], "bool": True, "none": None},
+    ]
+    for config in configs:
+        expected = hashlib.sha256(
+            canonical_json(config).encode("utf-8")
+        ).hexdigest()
+        assert _hash_config(config) == expected, f"divergence on {config!r}"
+
+
+def test_hash_config_is_order_insensitive() -> None:
+    """``_hash_config`` collapses semantically equivalent configs
+    (different key insertion order) to the same hash, because
+    ``canonical_json`` sorts keys.
+    """
+    a = {"ocr": True, "lang": "eng"}
+    b = {"lang": "eng", "ocr": True}
+    assert _hash_config(a) == _hash_config(b)
