@@ -171,6 +171,63 @@ def test_rebuild_catalogue_dry_run(
     assert "dry-run" in out.lower()
 
 
+# --- ingest --------------------------------------------------------------
+
+
+def test_ingest_reports_counts_on_fresh_run(
+    tmp_root: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+) -> None:
+    cfg = _make_config(tmp_root, tmp_path / "config.yaml")
+    main(["--config", str(cfg), "migrate"])
+    capsys.readouterr()
+
+    src = tmp_path / "doc.txt"
+    src.write_bytes(b"hi")
+    (tmp_root / "sources" / "sources.yaml").write_text(
+        f"version: 1\nsources:\n  - path: {src}\n",
+        encoding="utf-8",
+    )
+
+    rc = main(["--config", str(cfg), "ingest"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "new sources" in out.lower()
+    assert "1" in out
+
+
+def test_ingest_second_run_reports_zero_new(
+    tmp_root: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+) -> None:
+    cfg = _make_config(tmp_root, tmp_path / "config.yaml")
+    main(["--config", str(cfg), "migrate"])
+    src = tmp_path / "doc.txt"
+    src.write_bytes(b"hi")
+    (tmp_root / "sources" / "sources.yaml").write_text(
+        f"version: 1\nsources:\n  - path: {src}\n",
+        encoding="utf-8",
+    )
+    main(["--config", str(cfg), "ingest"])
+    capsys.readouterr()
+
+    rc = main(["--config", str(cfg), "ingest"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "0 new sources" in out
+
+
+def test_ingest_missing_manifest_exits_one(
+    tmp_root: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+) -> None:
+    cfg = _make_config(tmp_root, tmp_path / "config.yaml")
+    main(["--config", str(cfg), "migrate"])
+    capsys.readouterr()
+
+    rc = main(["--config", str(cfg), "ingest"])
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "sources manifest" in err.lower() or "not found" in err.lower()
+
+
 # --- Placeholders --------------------------------------------------------
 
 
