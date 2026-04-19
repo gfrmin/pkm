@@ -33,20 +33,25 @@ from pkm.catalogue import (
 
 # --- Fresh root ------------------------------------------------------------
 
-def test_fresh_root_migrates_to_v1(tmp_root: Path) -> None:
-    """A fresh knowledge root with no catalogue.duckdb is migrated to
-    schema v1: schema_meta carries one row for 0001, and all four v1
-    tables plus the three artifact indexes exist.
+def test_fresh_root_migrates_to_current_schema(tmp_root: Path) -> None:
+    """A fresh knowledge root with no catalogue.duckdb is migrated
+    through the full migration set: schema_meta records every
+    migration that ran, and every table declared by any migration is
+    present. Written to be robust to new migrations landing — asserts
+    the current set rather than a specific version.
     """
     applied = run_migrations(tmp_root)
-    assert applied == [1]
+    assert applied == [1, 2]
 
     with open_catalogue(tmp_root) as conn:
         rows = conn.execute(
             "SELECT schema_version, migration_id FROM schema_meta "
             "ORDER BY schema_version"
         ).fetchall()
-        assert rows == [(1, "0001_initial_schema.py")]
+        assert rows == [
+            (1, "0001_initial_schema.py"),
+            (2, "0002_normalise_tags.py"),
+        ]
 
         tables = {
             r[0]
@@ -55,7 +60,13 @@ def test_fresh_root_migrates_to_v1(tmp_root: Path) -> None:
                 "WHERE table_schema = 'main'"
             ).fetchall()
         }
-        assert {"schema_meta", "sources", "source_paths", "artifacts"} <= tables
+        assert {
+            "schema_meta",
+            "sources",
+            "source_paths",
+            "source_tags",
+            "artifacts",
+        } <= tables
 
         indexes = {
             r[0]
@@ -68,6 +79,7 @@ def test_fresh_root_migrates_to_v1(tmp_root: Path) -> None:
             "idx_artifacts_input",
             "idx_artifacts_producer",
             "idx_artifacts_status",
+            "idx_source_tags_tag",
         } <= indexes
 
 
@@ -75,30 +87,29 @@ def test_fresh_root_migrates_to_v1(tmp_root: Path) -> None:
 
 def test_second_run_is_a_proven_no_op(tmp_root: Path) -> None:
     """Running migrations twice writes zero new schema_meta rows on the
-    second pass and leaves the original ``applied_at`` timestamp
+    second pass and leaves every original ``applied_at`` timestamp
     untouched. This is the same idempotency discipline as the cache,
     expressed for schema state.
     """
     applied_first = run_migrations(tmp_root)
-    assert applied_first == [1]
+    assert applied_first == [1, 2]
 
     with open_catalogue(tmp_root) as conn:
-        first_row = conn.execute(
+        first_snapshot = conn.execute(
             "SELECT schema_version, migration_id, migration_hash, applied_at "
-            "FROM schema_meta WHERE schema_version = 1"
-        ).fetchone()
-    assert first_row is not None
+            "FROM schema_meta ORDER BY schema_version"
+        ).fetchall()
+    assert len(first_snapshot) == 2
 
     applied_second = run_migrations(tmp_root)
     assert applied_second == []
 
     with open_catalogue(tmp_root) as conn:
-        rows = conn.execute(
+        second_snapshot = conn.execute(
             "SELECT schema_version, migration_id, migration_hash, applied_at "
-            "FROM schema_meta"
+            "FROM schema_meta ORDER BY schema_version"
         ).fetchall()
-    assert len(rows) == 1
-    assert rows[0] == first_row
+    assert second_snapshot == first_snapshot
 
 
 # --- Hash verification ------------------------------------------------------

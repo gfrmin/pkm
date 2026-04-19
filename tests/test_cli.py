@@ -100,7 +100,7 @@ def test_unknown_subcommand_exits_two(
 # --- migrate -------------------------------------------------------------
 
 
-def test_migrate_on_fresh_root_applies_0001(
+def test_migrate_on_fresh_root_applies_pending_set(
     tmp_root: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str],
 ) -> None:
     cfg = _make_config(tmp_root, tmp_path / "config.yaml")
@@ -108,7 +108,7 @@ def test_migrate_on_fresh_root_applies_0001(
     assert rc == 0
     out = capsys.readouterr().out
     assert "applied" in out
-    assert "[1]" in out
+    assert "[1, 2]" in out
     assert (tmp_root / "catalogue.duckdb").exists()
 
 
@@ -140,7 +140,7 @@ def test_migrate_dry_run_reports_and_writes_nothing(
     rc2 = main(["--config", str(cfg), "migrate"])
     assert rc2 == 0
     out2 = capsys.readouterr().out
-    assert "[1]" in out2  # would have been "no pending" if dry-run had written
+    assert "[1, 2]" in out2  # would have been "no pending" if dry-run had written
 
 
 # --- rebuild-catalogue ---------------------------------------------------
