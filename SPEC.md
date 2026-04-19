@@ -1,6 +1,6 @@
 # SPEC.md — technical specification
 
-Version: 0.1.4 (draft)
+Version: 0.1.5 (draft)
 Status: Foundation for Phase 1 (extraction layer with content-addressed
 caching). This spec is the contract. Changes require a separate commit
 with justification.
@@ -168,8 +168,7 @@ CREATE TABLE sources (
     first_seen    TIMESTAMP NOT NULL,
     last_seen     TIMESTAMP NOT NULL,
     size_bytes    BIGINT NOT NULL,
-    mime_type     VARCHAR,               -- as detected, nullable
-    tags          VARCHAR[]              -- user-applied tags
+    mime_type     VARCHAR                -- as detected, nullable
 );
 
 CREATE TABLE source_paths (
@@ -181,6 +180,15 @@ CREATE TABLE source_paths (
 );
 -- One source may have been seen at multiple paths over time
 -- (moves, renames, copies). The history is kept.
+
+CREATE TABLE source_tags (
+    source_id  VARCHAR NOT NULL,
+    tag        VARCHAR NOT NULL,
+    PRIMARY KEY (source_id, tag),
+    FOREIGN KEY (source_id) REFERENCES sources(source_id)
+);
+CREATE INDEX idx_source_tags_tag ON source_tags(tag);
+-- See §13.5 for the modelling rationale.
 
 CREATE TABLE artifacts (
     cache_key              VARCHAR PRIMARY KEY,
@@ -544,6 +552,28 @@ ingest on the first bad path would block progress on the rest of the
 manifest and invite ad-hoc retry mechanisms; a WARNING line in the
 log is already sufficient debug evidence per §14.2.
 
+### 13.5 Tags are many-to-many, not an embedded list
+
+User-applied tags are modelled as the `source_tags(source_id, tag)`
+table (see §5.1), not as an array column on `sources`. The
+relationship between sources and tags is many-to-many: one source
+may carry many tags and one tag may apply to many sources. Modelling
+it as an embedded `VARCHAR[]` column on `sources` collapses the
+relationship to one-to-many and hides the tag entity.
+
+The normalised form keeps tag queries as ordinary SQL. "Find all
+sources tagged `legal`" is `SELECT source_id FROM source_tags WHERE
+tag = 'legal'`; "count sources per tag" is `SELECT tag, COUNT(*) FROM
+source_tags GROUP BY tag`. Both are directly expressible in the
+`duckdb` CLI and aligned with §14.1's inspectability promise — every
+piece of state is a row in a named table, not an element of a
+collection column that requires `UNNEST` gymnastics to interrogate.
+
+Tag updates on re-ingest (declarative overwrite, per §8.2 and the
+semantics of `sources.yaml`) are implemented as `DELETE FROM
+source_tags WHERE source_id = ?` followed by a fresh `INSERT` of the
+current tag set, inside the same transaction as any `sources` update.
+
 ## 14. Strictness and first-principles debuggability
 
 This project is intentionally strict. The following rules exist to
@@ -648,6 +678,17 @@ numbered migration is added in sequence.
 
 ## 15. Change log
 
+- 0.1.5 (draft): Tag storage normalised. §5.1 replaces the
+  `tags VARCHAR[]` column on `sources` with a dedicated
+  `source_tags(source_id, tag)` table, primary-keyed on the pair,
+  with an index on `tag` and a foreign key to `sources`. §13 gains
+  §13.5 with the modelling rationale: tags are many-to-many between
+  sources and tag strings, and the embedded-list representation was
+  modelling the relationship as one-to-many against its actual
+  shape. The normalised form makes queries like "find all sources
+  tagged X" and "count sources per tag" first-class SQL and keeps
+  §14.1's inspectability promise intact — every piece of state is a
+  row in a named table, not an element of a collection column.
 - 0.1.0 (draft): Initial specification covering Phase 1 foundation.
 - 0.1.1 (draft): Resolved §13 design decisions; added §14 on
   strictness and first-principles debuggability.
