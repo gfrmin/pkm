@@ -113,31 +113,39 @@ def run_migrations(
     root: Path,
     *,
     migrations_dir: Path | None = None,
+    dry_run: bool = False,
 ) -> list[int]:
     """Apply pending migrations in order; idempotent.
 
     Before applying anything new, verifies that every
     previously-applied migration (per ``schema_meta``) still exists at
     its file path and still hashes to its recorded value. On mismatch,
-    raises ``MigrationHashMismatchError`` or ``MigrationMissingError`` and
-    aborts without applying further migrations (SPEC §14.8).
+    raises ``MigrationHashMismatchError`` or ``MigrationMissingError``
+    and aborts without applying further migrations (SPEC §14.8).
 
     Args:
         root: Knowledge root directory. The catalogue file is created
-            at ``<root>/catalogue.duckdb`` on first run.
+            at ``<root>/catalogue.duckdb`` on first run (even in
+            dry_run mode, so the result reflects the real starting
+            state).
         migrations_dir: Override for the migrations source directory.
             Production callers pass ``None`` (defaulting to
             ``MIGRATIONS_DIR``). Tests may supply a copy.
+        dry_run: If True, run integrity checks and compute the
+            pending list, but do not apply any migration. Returned
+            list is the versions that *would* be applied on a real
+            run.
 
     Returns:
-        The list of ``schema_version`` integers applied on this call,
-        in application order. Empty list if nothing was pending.
+        The list of ``schema_version`` integers. When ``dry_run`` is
+        False these were applied on this call, in application order.
+        When True they are pending. Empty if nothing is pending.
 
     Raises:
-        MigrationHashMismatchError: an applied migration's file on disk
-            differs from its stored hash.
-        MigrationMissingError: an applied migration's file is no longer
-            present on disk.
+        MigrationHashMismatchError: an applied migration's file on
+            disk differs from its stored hash.
+        MigrationMissingError: an applied migration's file is no
+            longer present on disk.
         MigrationError: structural problems such as duplicate
             versions, malformed filenames, a migration missing an
             ``apply`` function, or non-monotonic version ordering.
@@ -164,6 +172,9 @@ def run_migrations(
                         f"{max_applied}; migrations must be appended in "
                         f"strictly increasing order."
                     )
+
+        if dry_run:
+            return [m.version for m in pending]
 
         for m in pending:
             _apply_single(conn, m)
