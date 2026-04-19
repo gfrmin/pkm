@@ -22,6 +22,7 @@ import json
 import re
 
 import pytest
+
 from pkm.hashing import canonical_json, compute_cache_key
 
 HEX64 = re.compile(r"^[0-9a-f]{64}$")

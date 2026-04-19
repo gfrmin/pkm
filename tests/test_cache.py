@@ -24,6 +24,7 @@ import json
 from pathlib import Path
 
 import pytest
+
 from pkm.cache import (
     META_FORMAT_VERSION,
     CacheInconsistencyError,
@@ -36,10 +37,9 @@ from pkm.cache import (
     sweep_orphans,
     write_artifact,
 )
-from pkm.producer import ProducerResult
-
 from pkm.catalogue import open_catalogue
 from pkm.hashing import compute_cache_key
+from pkm.producer import ProducerResult
 
 # --- Helpers ---------------------------------------------------------------
 
