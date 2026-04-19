@@ -1,6 +1,6 @@
 # SPEC.md — technical specification
 
-Version: 0.1.1 (draft)
+Version: 0.1.2 (draft)
 Status: Foundation for Phase 1 (extraction layer with content-addressed
 caching). This spec is the contract. Changes require a separate commit
 with justification.
@@ -213,10 +213,15 @@ CREATE INDEX idx_artifacts_status ON artifacts(status);
 ### 5.3 Rebuilding from the cache
 
 There MUST be a `rebuild_catalogue` command that walks the cache
-directory and reconstructs the `artifacts` and `sources` tables
-from the `meta.json` files and source path manifests. The
-`source_paths` history may be lost on rebuild (it's observational
-and not reconstructable from artifacts alone).
+directory and reconstructs the `artifacts` table from the `meta.json`
+files. Rebuild does NOT reconstruct the `sources` or `source_paths`
+tables — those contain observational data (paths, timestamps, sizes,
+MIME types, user tags) that cannot be recovered from the cache alone.
+To repopulate `sources` after a rebuild, the user re-runs `pkm ingest`.
+
+This keeps the responsibilities of rebuild and ingest crisply
+separated: rebuild is for artifact derivations recorded in the cache,
+ingest is for observations about source files on the filesystem.
 
 ## 6. Operations
 
@@ -231,11 +236,33 @@ to be non-idempotent.
 
 ### 6.2 Atomicity
 
-Writes to the cache and corresponding catalogue rows MUST occur in
-a single transaction. On failure, neither commits. The write order
-is: content file → meta.json → catalogue row. If interrupted, the
-incomplete cache directory is cleaned up on next run by a
-consistency check.
+Writes to the cache and the corresponding catalogue row MUST be
+logically atomic: on the next successful run of the system, no cache
+directory exists without a matching catalogue row, and no catalogue
+row exists without its cache files. This is the visible invariant that
+downstream code relies on.
+
+The filesystem and the DuckDB catalogue cannot share a single
+transaction, so the invariant is maintained by ordering plus an
+explicit orphan sweep. The write order is:
+
+1. Write `content` (byte file) to its final location.
+2. Write `meta.json` beside it.
+3. Open a DuckDB transaction, insert the `artifacts` row, commit.
+
+If the process is interrupted between any of these steps, the on-disk
+state may contain an orphan cache directory (content and/or meta.json
+present without a catalogue row). Orphans are removed by a consistency
+sweep that runs at the start of every `pkm extract` and every
+`pkm rebuild-catalogue` invocation. "Start of invocation" is the only
+meaningful notion of startup here — there is no daemon (SPEC §14.6).
+Other commands (`pkm ingest`, `pkm migrate`) do not touch the cache
+and therefore do not run the sweep.
+
+The sweep is conservative: a cache directory is considered orphaned
+iff (a) it contains a `content` file or a `meta.json` file, and (b)
+no row in `artifacts` has `cache_key` equal to the directory name.
+Orphan directories are removed; the event is logged.
 
 ### 6.3 Transactions
 
@@ -279,9 +306,13 @@ Producers MUST:
   `content_encoding`.
 - Never raise exceptions that escape `produce()`. Any failure is
   caught and returned as `status='failed'` with a message.
-- Be deterministic given the same `(input_path, input_hash, config)`.
-  If a producer is non-deterministic by nature (e.g., later LLM
-  producers), the randomness source MUST appear in `config`.
+- Be deterministic given the same input *content* (as identified by
+  `input_hash`) and the same `config`. `input_path` is an I/O handle
+  used to read the bytes at call time; it is NOT part of the
+  determinism contract. Two machines with the same byte content at
+  different paths MUST produce the same output. If a producer is
+  non-deterministic by nature (e.g., later LLM producers), the
+  randomness source MUST appear in `config`.
 
 ### 7.2 Initial extractors
 
@@ -470,6 +501,30 @@ Rationale: constraining Phase 1 to text would require rewriting
 cache primitives when Phase 2 adds embeddings. Bytes is the
 most general abstraction; interpretation belongs one layer up.
 
+### 13.4 Paths that never resolved
+
+Distinct from §13.2 (which covers sources that *were* seen and then
+vanished): a `sources.yaml` entry whose path has never resolved to a
+readable file produces a WARNING log event and is skipped. No
+`source_id` is created, because there is no content to hash; the
+`sources` and `source_paths` tables are unaffected.
+
+A path resolving to something unreadable — file not found, permission
+denied, broken symlink, device or socket file, a directory when
+`recursive: true` is not set — is treated under this section rather
+than as an ingest failure. The behaviour is uniform: WARNING + skip.
+Ingest MUST NOT halt because of an unreadable entry; subsequent
+entries are processed normally. If the path later becomes readable,
+the next `ingest` run treats it as a first-time source and creates a
+`source_id` at that point.
+
+Rationale: sources are aspirational when declared in `sources.yaml`
+and become real only when their bytes are read. A declaration that
+never corresponded to readable bytes is noise, not a failure. Halting
+ingest on the first bad path would block progress on the rest of the
+manifest and invite ad-hoc retry mechanisms; a WARNING line in the
+log is already sufficient debug evidence per §14.2.
+
 ## 14. Strictness and first-principles debuggability
 
 This project is intentionally strict. The following rules exist to
@@ -563,3 +618,27 @@ each logged. No automatic migration on startup — the user runs
 - 0.1.0 (draft): Initial specification covering Phase 1 foundation.
 - 0.1.1 (draft): Resolved §13 design decisions; added §14 on
   strictness and first-principles debuggability.
+- 0.1.2 (draft): Four edits resolving ambiguities surfaced during
+  Phase 1 implementation planning:
+    - §5.3 narrowed to rebuild `artifacts` only; `sources` is
+      repopulated by re-running `pkm ingest`. Rationale: `sources`
+      rows carry observational data that cannot be reconstructed
+      from cache alone, so the only honest rebuild is artifact-only.
+    - §6.2 rewritten to state the visible invariant explicitly
+      ("no catalogue row without files, no files without a catalogue
+      row on next run") and to name the commands that run the orphan
+      sweep (`pkm extract`, `pkm rebuild-catalogue`). Rationale: the
+      previous "single transaction" phrasing conflated FS and DB
+      atomicity, and "on next run" had no clear referent without a
+      daemon.
+    - §7.1 determinism contract clarified: deterministic given the
+      same input *content* (by `input_hash`) and `config`;
+      `input_path` is an I/O handle, not part of the contract.
+      Rationale: paths differ by machine, so the old wording could
+      be read to permit path-dependent behaviour, which would break
+      cross-machine cache parity.
+    - §13.4 added to cover paths that never resolved (including
+      unreadable, permission-denied, broken-symlink, device-file
+      cases). Rationale: previously conflated with §13.2 ghost
+      behaviour; separating them prevents ad-hoc retry logic and
+      clarifies that ingest never halts on bad manifest entries.
