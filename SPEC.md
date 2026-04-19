@@ -1,6 +1,6 @@
 # SPEC.md — technical specification
 
-Version: 0.1.3 (draft)
+Version: 0.1.4 (draft)
 Status: Foundation for Phase 1 (extraction layer with content-addressed
 caching). This spec is the contract. Changes require a separate commit
 with justification.
@@ -268,6 +268,20 @@ The sweep is conservative: a cache directory is considered orphaned
 iff (a) it contains a `content` file or a `meta.json` file, and (b)
 no row in `artifacts` has `cache_key` equal to the directory name.
 Orphan directories are removed; the event is logged.
+
+**Asymmetric recovery.** The sweep covers only the "files without a
+row" direction. The reverse — a catalogue row whose `content` or
+`meta.json` is missing on disk — is NOT auto-repaired, because
+producing new bytes for a known cache key without comparing against
+the missing originals would overwrite a data-loss signal with
+output we cannot verify. The cache write and cache read paths both
+detect this case explicitly: they abort the current operation with
+a `CacheInconsistencyError`, log the mismatch at ERROR with the
+cache key and the list of missing files, and leave the catalogue
+untouched. The user's remedy is to run `pkm rebuild-catalogue`,
+which reconciles the catalogue back to the filesystem's actual
+state (dropping rows whose files are gone and recreating rows for
+any files whose metadata is intact but unrecorded).
 
 ### 6.3 Transactions
 
@@ -637,6 +651,16 @@ numbered migration is added in sequence.
 - 0.1.0 (draft): Initial specification covering Phase 1 foundation.
 - 0.1.1 (draft): Resolved §13 design decisions; added §14 on
   strictness and first-principles debuggability.
+- 0.1.4 (draft): §6.2 extended with an "Asymmetric recovery"
+  paragraph documenting how the reverse of an orphan — a catalogue
+  row whose cache files are missing — is handled. The sweep covers
+  only the files-without-row direction; the row-without-files
+  direction aborts the current operation with
+  `CacheInconsistencyError`, logs ERROR, and leaves the catalogue
+  untouched. Reconciliation is the user's explicit call via
+  `pkm rebuild-catalogue`. Rationale: silently producing new bytes
+  for a known cache key would mask data loss with unverifiable
+  output; an explicit abort preserves the forensic trail.
 - 0.1.3 (draft): Migration hash verification and schema_meta
   extension. §5.1 extends `schema_meta` with `migration_id` and
   `migration_hash` columns so each row records which migration
