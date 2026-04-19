@@ -1,6 +1,6 @@
 # SPEC.md — technical specification
 
-Version: 0.1.2 (draft)
+Version: 0.1.3 (draft)
 Status: Foundation for Phase 1 (extraction layer with content-addressed
 caching). This spec is the contract. Changes require a separate commit
 with justification.
@@ -154,8 +154,13 @@ Schema version: 1
 ```sql
 CREATE TABLE schema_meta (
     schema_version INTEGER PRIMARY KEY,
+    migration_id   VARCHAR NOT NULL,  -- migration filename, e.g. '0001_initial_schema.py'
+    migration_hash VARCHAR NOT NULL,  -- SHA-256 hex of the migration file at apply time
     applied_at     TIMESTAMP NOT NULL
 );
+-- One row per applied migration. The "current" schema version is
+-- MAX(schema_version); the full history of schema applications is
+-- the full row set (see §14.8 on migration hash verification).
 
 CREATE TABLE sources (
     source_id     VARCHAR PRIMARY KEY,  -- SHA-256 of content
@@ -613,11 +618,38 @@ Python functions in a `migrations/` directory, applied in order,
 each logged. No automatic migration on startup — the user runs
 `migrate` explicitly and sees what changes.
 
+**Migration hash verification.** For every migration it has applied,
+the `schema_meta` table stores the migration filename and the
+SHA-256 hash of the migration file at the moment it was applied
+(see §5.1). The migration runner recomputes the on-disk hash of
+every previously-applied migration and compares it to the stored
+hash before applying any new migrations. A mismatch — the file has
+been edited after application, replaced with different content, or
+removed — aborts with a clear error identifying the affected
+migration and rejecting any further work. This is the same class of
+paranoia as §14.5 version matching: the schema's derivation history
+must remain reproducible from the source tree, so applied migrations
+are immutable by policy. If a schema change is needed, a new
+numbered migration is added in sequence.
+
 ## 15. Change log
 
 - 0.1.0 (draft): Initial specification covering Phase 1 foundation.
 - 0.1.1 (draft): Resolved §13 design decisions; added §14 on
   strictness and first-principles debuggability.
+- 0.1.3 (draft): Migration hash verification and schema_meta
+  extension. §5.1 extends `schema_meta` with `migration_id` and
+  `migration_hash` columns so each row records which migration
+  produced the schema version and what that migration file hashed to
+  at apply time. §14.8 adds a new paragraph mandating that the
+  migration runner re-hashes every previously-applied migration
+  on every run and aborts loudly on mismatch — the same class of
+  paranoia as §14.5 version matching. Rationale: without the stored
+  filename + hash, "schema_meta records the current state" conflates
+  with "schema_meta records the path taken to get here", and there
+  is no way to detect an applied migration being edited in-place.
+  The conflation is resolved by making `schema_meta` a true log of
+  applications rather than a one-row version marker.
 - 0.1.2 (draft): Four edits resolving ambiguities surfaced during
   Phase 1 implementation planning:
     - §5.3 narrowed to rebuild `artifacts` only; `sources` is
