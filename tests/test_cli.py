@@ -174,16 +174,6 @@ def test_rebuild_catalogue_dry_run(
 # --- Placeholders --------------------------------------------------------
 
 
-def test_ingest_placeholder_exits_nonzero(
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    rc = main(["ingest"])
-    assert rc == 1
-    err = capsys.readouterr().err
-    assert "not wired up" in err.lower() or "not implemented" in err.lower()
-    assert "Step 7" in err
-
-
 def test_extract_placeholder_exits_nonzero(
     capsys: pytest.CaptureFixture[str],
 ) -> None:

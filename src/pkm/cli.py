@@ -40,6 +40,7 @@ from pathlib import Path
 
 from pkm.catalogue import run_migrations
 from pkm.config import Config, ConfigError, load_config
+from pkm.ingest import ingest_sources
 from pkm.rebuild import rebuild_artifacts
 
 logger = logging.getLogger(__name__)
@@ -159,11 +160,15 @@ def _build_parser() -> argparse.ArgumentParser:
 
     subparsers.add_parser(
         "ingest",
-        help="Register sources from sources.yaml (not implemented).",
+        help="Register sources from sources.yaml into the catalogue.",
         description=(
-            "Not yet implemented — scheduled for Phase 1 Step 7. "
-            "When wired, reads sources.yaml, hashes each referenced "
-            "file, and populates the sources and source_paths tables."
+            "Read <root>/sources/sources.yaml, hash each referenced "
+            "file, and populate the sources and source_paths tables "
+            "(SPEC §8). Idempotent: a second run produces zero new "
+            "rows. Unreadable entries (missing file, broken symlink, "
+            "directory without recursive: true) are WARNING-logged "
+            "and skipped (SPEC §13.4); ingest never halts on a bad "
+            "manifest entry."
         ),
     )
 
@@ -238,8 +243,15 @@ def _cmd_rebuild_catalogue(args: argparse.Namespace) -> int:
 
 
 def _cmd_ingest(args: argparse.Namespace) -> int:
-    print(_NOT_IMPLEMENTED_MESSAGE.format(name="ingest"), file=sys.stderr)
-    return 1
+    config = _load_config(args)
+    result = ingest_sources(config.root_dir)
+    print(
+        f"ingested: scanned {result.scanned}, "
+        f"{result.new_sources} new sources, "
+        f"{result.new_paths} new paths, "
+        f"{len(result.skipped)} skipped"
+    )
+    return 0
 
 
 def _cmd_extract(args: argparse.Namespace) -> int:
