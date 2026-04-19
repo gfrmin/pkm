@@ -32,6 +32,9 @@ packages = ["src/pkm"]
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "N", "UP", "B", "SIM", "RUF"]
 
+[tool.ruff.lint.isort]
+known-first-party = ["pkm"]
+
 [tool.mypy]
 strict = true
 warn_unreachable = true
