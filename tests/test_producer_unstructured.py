@@ -181,16 +181,65 @@ def test_converts_pptx(producer: UnstructuredProducer) -> None:
     assert len(elements) >= 3  # at minimum one per slide
 
 
-def test_cached_bytes_are_path_independent(
+def test_cache_key_is_path_independent(tmp_path: Path) -> None:
+    """SPEC §7.1 (v0.1.8): the cache key depends on input *content*,
+    not input_path. Two paths carrying byte-identical content MUST
+    produce the same cache key, because the input hash
+    (``sha256(content_bytes)``) is path-independent by construction
+    and the cache key is derived from it plus the producer identity
+    and config.
+
+    This test is trivially satisfied by ``compute_cache_key`` as
+    implemented — but writing it down ensures a future refactor
+    that tried to mix path information into the key (e.g., to
+    "improve locality") would red-light immediately.
+    """
+    import hashlib
+
+    from pkm.hashing import compute_cache_key
+
+    src = _FIXTURES / "sample.eml"
+    alt = tmp_path / "different-name.eml"
+    alt.write_bytes(src.read_bytes())
+
+    src_hash = hashlib.sha256(src.read_bytes()).hexdigest()
+    alt_hash = hashlib.sha256(alt.read_bytes()).hexdigest()
+    assert src_hash == alt_hash, "fixture sanity: bytes should match"
+
+    key_src = compute_cache_key(
+        input_hash=src_hash,
+        producer_name="unstructured",
+        producer_version="test",
+        producer_config={"strategy": "auto"},
+    )
+    key_alt = compute_cache_key(
+        input_hash=alt_hash,
+        producer_name="unstructured",
+        producer_version="test",
+        producer_config={"strategy": "auto"},
+    )
+    assert key_src == key_alt
+
+
+def test_element_ids_are_path_independent(
     producer: UnstructuredProducer, tmp_path: Path,
 ) -> None:
-    """SPEC §7.1 invariant: determinism over input *content*, not
-    input_path. Two paths carrying byte-identical content MUST
-    produce byte-identical output. Unstructured's default JSON
-    serialisation leaks filename/file_directory/last_modified AND
-    bakes the filename into each element's id_to_hash, so the
-    producer strips the metadata and recomputes the IDs before
-    serialising. This test pins the fix."""
+    """Separate from cache-key path-independence: Unstructured's
+    default ``Element.id_to_hash`` bakes ``metadata.filename`` into
+    every ``element_id``. Downstream consumers that key on those
+    IDs would observe the same content under different paths as
+    different content. The producer nulls ``filename``,
+    ``file_directory``, ``last_modified`` and recomputes IDs before
+    serialising.
+
+    This test pins that fix at the ID level — the concern per SPEC
+    §7.1 at v0.1.8 is not byte-equality of the whole output (that's
+    no longer required), but rather that content-derived
+    identifiers in the output are path-independent. Compares the
+    set of ``element_id`` values from two runs on the same content
+    at different paths; they must be identical."""
+    import json
+
     src = _FIXTURES / "sample.eml"
     alt = tmp_path / "different-name.eml"
     alt.write_bytes(src.read_bytes())
@@ -199,23 +248,14 @@ def test_cached_bytes_are_path_independent(
     r_alt = producer.produce(alt, "a" * 64, {})
     assert r_src.status == "success"
     assert r_alt.status == "success"
-    assert r_src.content == r_alt.content, (
-        "same content at different paths produced different output "
-        "— path-dependent metadata has leaked into the cached JSON"
+    assert r_src.content is not None and r_alt.content is not None
+
+    ids_src = {e["element_id"] for e in json.loads(r_src.content)}
+    ids_alt = {e["element_id"] for e in json.loads(r_alt.content)}
+    assert ids_src == ids_alt, (
+        "element_ids differ across paths — path-dependent metadata "
+        "has leaked into the ID hashes"
     )
-
-
-def test_repeated_produce_is_byte_stable(
-    producer: UnstructuredProducer,
-) -> None:
-    """Running produce twice on the same file must return
-    byte-identical content. This is a weaker claim than path
-    independence but would catch a regression where some nondet
-    source (clock, uuid) crept in."""
-    eml = _FIXTURES / "sample.eml"
-    r1 = producer.produce(eml, "a" * 64, {})
-    r2 = producer.produce(eml, "a" * 64, {})
-    assert r1.content == r2.content
 
 
 # --- Failure paths ------------------------------------------------------
