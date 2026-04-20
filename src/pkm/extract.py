@@ -65,7 +65,12 @@ from pathlib import Path
 
 import duckdb
 
-from pkm.cache import content_path_rel, sweep_orphans, write_artifact
+from pkm.cache import (
+    content_path_rel,
+    delete_artifact,
+    sweep_orphans,
+    write_artifact,
+)
 from pkm.catalogue import open_catalogue
 from pkm.config import Config, ExtractorConfig
 from pkm.hashing import compute_cache_key
@@ -551,6 +556,14 @@ def _process_source(
                 )
             )
         else:
+            # If this producer is in the failed set, the caller has
+            # asked for a retry (routing would not have included it
+            # otherwise). Delete the cached failure so write_artifact
+            # writes fresh bytes rather than short-circuiting on the
+            # existing row (SPEC §14.3).
+            if name in failed:
+                delete_artifact(root, conn, cache_key)
+
             parts.append(
                 _run_one(
                     source=source,

@@ -348,6 +348,61 @@ def read_artifact(
     )
 
 
+# --- Delete --------------------------------------------------------------
+
+
+def delete_artifact(
+    root: Path,
+    conn: duckdb.DuckDBPyConnection,
+    cache_key: str,
+) -> bool:
+    """Remove an artifact's cache files and catalogue row.
+
+    Used by ``pkm extract --retry-failed`` (SPEC §14.3) to clear a
+    cached failure before re-running the producer: ``write_artifact``
+    is idempotent and would short-circuit on the existing row, so a
+    retry must start from a clean slate. This is the only way an
+    artifact is removed from the catalogue during normal operation —
+    the sweep removes orphaned files, but this function removes the
+    row-plus-files atomically in the intended order (files first,
+    then row, so that an interrupted call leaves at worst a cache
+    directory for the next sweep to collect).
+
+    Args:
+        root: Knowledge root.
+        conn: Open catalogue connection.
+        cache_key: The artifact to remove.
+
+    Returns:
+        True if a row existed and was deleted, False if the cache
+        key was unknown to the catalogue (and no file action was
+        taken).
+    """
+    _validate_cache_key(cache_key)
+    if not _row_exists(conn, cache_key):
+        return False
+
+    adir = artifact_dir(root, cache_key)
+    if adir.exists():
+        shutil.rmtree(adir)
+
+    conn.execute("BEGIN TRANSACTION")
+    try:
+        conn.execute(
+            "DELETE FROM artifacts WHERE cache_key = ?", [cache_key]
+        )
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
+
+    logger.info(
+        "cache_deleted",
+        extra={"event": "cache_deleted", "cache_key": cache_key},
+    )
+    return True
+
+
 # --- Orphan sweep ---------------------------------------------------------
 
 
