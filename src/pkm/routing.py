@@ -90,11 +90,11 @@ def route(
     succeeded_set = set(succeeded)
     failed_set = set(failed)
 
-    plan: list[str] = []
+    plan: set[str] = set()
 
     # 1. Pandoc: baseline on every source it handles.
     if ext in PandocProducer.handled_formats:
-        plan.append("pandoc")
+        plan.add("pandoc")
 
     # 2. Docling: eager on PDFs + layout-tagged, fallback on
     #    Pandoc-failed.
@@ -105,27 +105,40 @@ def route(
         )
         fallback = "pandoc" in failed_set
         if eager or fallback:
-            plan.append("docling")
+            plan.add("docling")
 
     # 3. Unstructured: eager on email; otherwise runs when every
-    #    earlier producer is blocked (doesn't handle the format OR
-    #    already failed). This collapses the "nobody else handles"
-    #    and "both-others-failed" cases of §7.3 into one predicate.
+    #    earlier producer is blocked. "Blocked" means the producer
+    #    is not going to attempt this source: either it's not in
+    #    the plan (doesn't handle the format, or handles but wasn't
+    #    triggered) or it's already failed. This collapses §7.3's
+    #    "nobody-else-handles" and "both-others-failed" cases into
+    #    one predicate, and crucially also covers the "handles but
+    #    the eager/fallback triggers didn't fire" case — a .pptx
+    #    that Docling technically handles but routing didn't
+    #    escalate to.
     if ext in UnstructuredProducer.handled_formats:
         eager = ext in _EAGER_UNSTRUCTURED_EXTENSIONS
-        pandoc_blocked = (
-            ext not in PandocProducer.handled_formats
-            or "pandoc" in failed_set
-        )
-        docling_blocked = (
-            ext not in DoclingProducer.handled_formats
-            or "docling" in failed_set
-        )
+        pandoc_blocked = "pandoc" not in plan or "pandoc" in failed_set
+        docling_blocked = "docling" not in plan or "docling" in failed_set
         if eager or (pandoc_blocked and docling_blocked):
-            plan.append("unstructured")
+            plan.add("unstructured")
+
+    # Any previously-failed producer that handles the extension is a
+    # retry candidate. Include in the plan; the filter below decides
+    # whether to actually return it.
+    for name, cls in (
+        ("pandoc", PandocProducer),
+        ("docling", DoclingProducer),
+        ("unstructured", UnstructuredProducer),
+    ):
+        if name in failed_set and ext in cls.handled_formats:
+            plan.add(name)
+
+    ordered = [n for n in ("pandoc", "docling", "unstructured") if n in plan]
 
     result: list[str] = []
-    for name in plan:
+    for name in ordered:
         if name in succeeded_set:
             continue
         if name in failed_set and not retry_failed:
