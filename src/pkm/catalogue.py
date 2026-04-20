@@ -322,7 +322,9 @@ def _apply_single(
         raise
 
     logger.info(
-        "migration_applied",
+        "applied migration %s (schema v%d)",
+        m.filename,
+        m.version,
         extra={
             "event": "migration_applied",
             "schema_version": m.version,

@@ -287,7 +287,11 @@ def write_artifact(
         raise
 
     logger.info(
-        "cache_written",
+        "wrote %s artifact for %s via %s@%s",
+        result.status,
+        input_hash[:12],
+        producer_name,
+        producer_version,
         extra={
             "event": "cache_written",
             "cache_key": cache_key,
@@ -397,7 +401,8 @@ def delete_artifact(
         raise
 
     logger.info(
-        "cache_deleted",
+        "deleted cached artifact %s",
+        cache_key[:12],
         extra={"event": "cache_deleted", "cache_key": cache_key},
     )
     return True
@@ -450,7 +455,9 @@ def sweep_orphans(
             shutil.rmtree(bb)
             removed.append(cache_key)
             logger.warning(
-                "orphan_removed",
+                "removed orphan cache dir %s (contained %s)",
+                cache_key[:12],
+                ", ".join(contained),
                 extra={
                     "event": "orphan_removed",
                     "cache_key": cache_key,
@@ -548,7 +555,9 @@ def _raise_inconsistency(
     if meta_missing:
         missing.append("meta.json")
     logger.error(
-        "cache_inconsistency",
+        "cache inconsistency at %s: catalogue row exists but %s missing",
+        cache_key[:12],
+        ", ".join(missing),
         extra={
             "event": "cache_inconsistency",
             "cache_key": cache_key,

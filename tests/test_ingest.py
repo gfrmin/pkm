@@ -234,8 +234,11 @@ def test_ingest_missing_file_is_skipped_and_logged(
     assert r.new_sources == 0
     assert r.skipped == [str(missing)]
     assert _count_sources(migrated_root) == 0
+    # The event identifier is in extras (for structured queries),
+    # not in the human-readable message.
     assert any(
-        rec.levelname == "WARNING" and "ingest_skipped" in rec.message
+        rec.levelname == "WARNING"
+        and getattr(rec, "event", None) == "ingest_skipped"
         for rec in caplog.records
     )
 

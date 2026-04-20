@@ -164,7 +164,9 @@ def ingest_sources(
                         [path_str, now, sid],
                     )
                     logger.info(
-                        "source_re_seen",
+                        "re-observed %s at %s",
+                        sid[:12],
+                        path_str,
                         extra={
                             "event": "source_re_seen",
                             "source_id": sid,
@@ -181,7 +183,10 @@ def ingest_sources(
                     )
                     new_sources += 1
                     logger.info(
-                        "source_ingested",
+                        "ingested %s (%d bytes) as %s",
+                        path_str,
+                        size,
+                        sid[:12],
                         extra={
                             "event": "source_ingested",
                             "source_id": sid,
@@ -200,7 +205,9 @@ def ingest_sources(
                     )
                     new_paths += 1
                     logger.info(
-                        "source_path_added",
+                        "recorded new path %s for %s",
+                        path_str,
+                        sid[:12],
                         extra={
                             "event": "source_path_added",
                             "source_id": sid,
@@ -215,7 +222,11 @@ def ingest_sources(
 
     scanned = ingested + len(skipped)
     logger.info(
-        "ingest_complete",
+        "ingest complete: scanned %d, %d new sources, %d new paths, %d skipped",
+        scanned,
+        new_sources,
+        new_paths,
+        len(skipped),
         extra={
             "event": "ingest_complete",
             "scanned": scanned,
@@ -407,7 +418,9 @@ def _replace_tags(
 
 def _log_and_skip(skipped: list[str], path: str, reason: str) -> None:
     logger.warning(
-        "ingest_skipped",
+        "skipped %s (%s)",
+        path,
+        reason,
         extra={"event": "ingest_skipped", "path": path, "reason": reason},
     )
     skipped.append(path)

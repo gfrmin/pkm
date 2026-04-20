@@ -199,7 +199,8 @@ def _run(
         swept = sweep_orphans(root, conn)
         if swept:
             logger.warning(
-                "extract_swept_orphans",
+                "swept %d orphan cache directories at extract start",
+                len(swept),
                 extra={
                     "event": "extract_swept_orphans",
                     "count": len(swept),
@@ -210,7 +211,7 @@ def _run(
         if not sources:
             elapsed = time.monotonic() - t_start
             logger.info(
-                "extract_complete",
+                "extract complete (no sources to process)",
                 extra={
                     "event": "extract_complete",
                     "total_sources": 0,
@@ -246,7 +247,9 @@ def _run(
         producers: dict[str, Producer] = {}
 
         logger.info(
-            "extract_started",
+            "extract starting on %d source(s); possibly-needed producers: %s",
+            len(sources),
+            ", ".join(sorted(possibly_needed)) or "(none)",
             extra={
                 "event": "extract_started",
                 "total_sources": len(sources),
@@ -262,7 +265,10 @@ def _run(
             if stop_flag.stop_requested():
                 interrupted = True
                 logger.warning(
-                    "extract_interrupted",
+                    "extract interrupted after %d of %d sources (%d remaining)",
+                    counters.processed,
+                    len(sources),
+                    len(sources) - counters.processed,
                     extra={
                         "event": "extract_interrupted",
                         "processed": counters.processed,
@@ -294,7 +300,14 @@ def _run(
 
     elapsed = time.monotonic() - t_start
     logger.info(
-        "extract_complete",
+        "extract complete: processed %d/%d, %d succeeded, %d failed, "
+        "%d cache hits in %.2fs",
+        counters.processed,
+        len(sources),
+        counters.succeeded,
+        counters.failed,
+        counters.cache_hits,
+        elapsed,
         extra={
             "event": "extract_complete",
             "total_sources": len(sources),
@@ -570,7 +583,10 @@ def _run_one(
     if result.status == "success":
         counters.succeeded += 1
         logger.info(
-            "extraction_succeeded",
+            "extracted %s via %s in %.2fs",
+            source.source_id[:12],
+            name,
+            elapsed,
             extra={
                 "event": "extraction_succeeded",
                 "source_id": source.source_id,
@@ -583,7 +599,11 @@ def _run_one(
 
     counters.failed += 1
     logger.warning(
-        "extraction_failed",
+        "extraction failed for %s via %s (%.2fs): %s",
+        source.source_id[:12],
+        name,
+        elapsed,
+        result.error_message,
         extra={
             "event": "extraction_failed",
             "source_id": source.source_id,

@@ -113,7 +113,10 @@ def rebuild_artifacts(
             TypeError,
         ) as e:
             logger.warning(
-                "rebuild_skipped",
+                "skipped cache entry %s during rebuild (%s: %s)",
+                cache_key[:12],
+                type(e).__name__,
+                e,
                 extra={
                     "event": "rebuild_skipped",
                     "cache_key": cache_key,
@@ -124,7 +127,10 @@ def rebuild_artifacts(
 
     if dry_run:
         logger.info(
-            "rebuild_dry_run",
+            "rebuild dry-run: would insert %d of %d scanned, %d skipped",
+            len(rows),
+            scanned,
+            len(skipped),
             extra={
                 "event": "rebuild_dry_run",
                 "scanned": scanned,
@@ -161,7 +167,11 @@ def rebuild_artifacts(
         swept = sweep_orphans(root, conn)
 
     logger.info(
-        "rebuild_complete",
+        "rebuild complete: scanned %d, inserted %d, skipped %d, swept %d",
+        scanned,
+        len(rows),
+        len(skipped),
+        len(swept),
         extra={
             "event": "rebuild_complete",
             "scanned": scanned,
