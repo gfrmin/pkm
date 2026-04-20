@@ -74,6 +74,18 @@ class ProducerDiscoveryError(ProducerError):
     """
 
 
+class ProducerConfigError(ProducerError):
+    """The producer's ``config`` dict is malformed.
+
+    Raised at constructor time when ``config.yaml`` supplies a key
+    the producer does not recognise, omits a required key, or
+    attaches a value of the wrong type to a known key. Validation
+    is strict by design — silent coercion (e.g. ``"yes"`` → ``True``)
+    would hide typos and change cache keys without the user's
+    knowledge.
+    """
+
+
 @dataclass(frozen=True)
 class ProducerResult:
     """The outcome of a single ``Producer.produce`` call (SPEC §7.1,
