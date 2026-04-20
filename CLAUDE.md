@@ -5,6 +5,68 @@ this project. Read it at the start of every session. If anything here
 conflicts with a later instruction in the conversation, raise the conflict
 rather than silently resolving it.
 
+## Commands
+
+This project uses `uv` for dependency management and `pytest` / `ruff` /
+`mypy` for quality gates. All commands run from the repo root.
+
+- **Tests**: `uv run pytest` (or `uv run pytest tests/test_cache.py::test_name`
+  for a single test). Tests live in `tests/`; conventions in `conftest.py`.
+- **Lint**: `uv run ruff check src tests` (rule selection in `pyproject.toml`).
+- **Typecheck**: `uv run mypy` (strict mode, `src/pkm` only, per `pyproject.toml`).
+- **CLI**: `uv run pkm <subcommand>` — subcommands include `ingest`, `extract`,
+  `migrate`, `rebuild-catalogue`. Entry point: `pkm.cli:main` (see
+  `pyproject.toml` `[project.scripts]`). `python -m pkm` also works.
+- **Python**: pinned to `>=3.13,<3.14` in `pyproject.toml`.
+
+## Architecture at a glance
+
+`pkm` is a **content-addressed extraction cache with a DuckDB catalogue**.
+The data flow is:
+
+    ingest  →  route  →  extract  →  (cache + catalogue)
+
+- **ingest** (`src/pkm/ingest.py`): register source files, compute SHA-256,
+  populate `sources` / `source_paths` / `source_tags` tables.
+- **route** (`src/pkm/routing.py`): pure function deciding which producers
+  run on each source, using extension + tags + producer status. Reads
+  `handled_formats` class attributes; does not instantiate producers.
+- **extract** (`src/pkm/extract.py`): instantiate each producer once,
+  dispatch sources through the router, write results atomically via
+  `cache.write_artifact` (blob + `meta.json` + catalogue row in one
+  transaction).
+- **rebuild** (`src/pkm/rebuild.py`): recovery path — reconcile catalogue
+  from on-disk cache.
+
+**Cache vs catalogue (the central distinction).**
+The **cache** (`src/pkm/cache.py`) is an append-only filesystem store under
+`<root>/cache/<aa>/<bb…>/`, keyed by the hash of
+`{input_hash, producer_name, producer_version, producer_config_hash}`. The
+**catalogue** (`src/pkm/catalogue.py`) is a mutable DuckDB database,
+rebuildable from the cache. One hashing function governs both:
+`compute_cache_key()` in `src/pkm/hashing.py`. Never hash outside it.
+
+**Producers** (`src/pkm/producers/`): three concrete implementations of the
+`Producer` protocol (`src/pkm/producer.py`) — `pandoc`, `docling`,
+`unstructured`. Each exposes `handled_formats` (read by the router) and a
+`produce()` method. Per `SPEC.md`, no plugin registry until a fourth
+producer exists.
+
+**Migrations** (`src/pkm/migrations/`): numbered Python modules
+(`0001_initial_schema.py`, `0002_normalise_tags.py`, …). Hash-verified on
+apply (`SPEC.md` §14.8) — editing a landed migration will abort the run.
+
+**Read these first to orient**:
+
+1. `SPEC.md` (TOC + §2–§4 sources/producers/cache keys, §7–§9 extraction
+   flow, §14 strictness principles). The spec is the contract.
+2. `src/pkm/hashing.py` — canonicalisation and cache-key computation.
+3. `src/pkm/cache.py` — filesystem layout, write ordering, atomic
+   invariants.
+4. `src/pkm/catalogue.py` — DuckDB schema, migration runner.
+5. `src/pkm/extract.py` — the pipeline entry point that ties it all
+   together.
+
 ## Philosophy
 
 This project is building foundations. The cost of getting cache semantics
