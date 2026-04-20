@@ -18,19 +18,12 @@ narrows further.
 
 Flags and their semantics:
 
-  ``--verify``        Re-run every already-successful artifact,
-                      byte-compare against the cached content. On
-                      mismatch: ERROR log with both hashes,
-                      print to stdout, non-zero exit. No writes —
-                      ``--verify`` is read-only. Failed entries are
-                      skipped (their error text may contain
-                      transient information that will not match);
-                      ``--retry-failed`` is the mechanism for
-                      re-running failures.
-
   ``--retry-failed``  Include previously-failed producers back in
                       the routing candidate set. Passes through to
-                      ``pkm.routing.route``.
+                      ``pkm.routing.route``. Triggers a call to
+                      ``cache.delete_artifact`` on each failed
+                      producer's cached entry before re-running,
+                      per SPEC §6.2 at v0.1.7.
 
   ``--source HASH``   Restrict processing to sources whose
                       ``source_id`` starts with the given hex
@@ -55,22 +48,16 @@ slow, revisit *with data*.
 
 from __future__ import annotations
 
-import hashlib
 import logging
 import signal
 import time
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 import duckdb
 
-from pkm.cache import (
-    content_path_rel,
-    delete_artifact,
-    sweep_orphans,
-    write_artifact,
-)
+from pkm.cache import delete_artifact, sweep_orphans, write_artifact
 from pkm.catalogue import open_catalogue
 from pkm.config import Config, ExtractorConfig
 from pkm.hashing import compute_cache_key
@@ -110,10 +97,8 @@ class ExtractResult:
     succeeded: int
     failed: int
     cache_hits: int
-    mismatches: int
     interrupted: bool
     elapsed_seconds: float
-    mismatch_cache_keys: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -143,7 +128,6 @@ def extract(
     root: Path,
     config: Config,
     *,
-    verify: bool = False,
     retry_failed: bool = False,
     source_prefix: str | None = None,
     producer_name: str | None = None,
@@ -156,10 +140,6 @@ def extract(
         config: Loaded ``config.yaml`` contents, including the
             ``extractors`` section with per-producer versions and
             configs.
-        verify: If True, re-run every already-successful artifact
-            and byte-compare with the cached content; writes
-            nothing; non-zero mismatches surface in the returned
-            ``ExtractResult``.
         retry_failed: If True, re-run previously-failed producers.
         source_prefix: Restrict to source_ids starting with this
             hex prefix (min 16 chars).
@@ -193,7 +173,6 @@ def extract(
         return _run(
             root=root,
             config=config,
-            verify=verify,
             retry_failed=retry_failed,
             source_prefix=source_prefix,
             producer_name=producer_name,
@@ -209,7 +188,6 @@ def _run(
     *,
     root: Path,
     config: Config,
-    verify: bool,
     retry_failed: bool,
     source_prefix: str | None,
     producer_name: str | None,
@@ -240,7 +218,6 @@ def _run(
                     "succeeded": 0,
                     "failed": 0,
                     "cache_hits": 0,
-                    "mismatches": 0,
                     "elapsed_seconds": elapsed,
                 },
             )
@@ -250,7 +227,6 @@ def _run(
                 succeeded=0,
                 failed=0,
                 cache_hits=0,
-                mismatches=0,
                 interrupted=False,
                 elapsed_seconds=elapsed,
             )
@@ -275,7 +251,6 @@ def _run(
                 "event": "extract_started",
                 "total_sources": len(sources),
                 "possibly_needed_producers": sorted(possibly_needed),
-                "verify": verify,
                 "retry_failed": retry_failed,
             },
         )
@@ -305,7 +280,6 @@ def _run(
                     name, producers, config
                 ),
                 config=config,
-                verify=verify,
                 retry_failed=retry_failed,
                 producer_filter=producer_name,
                 counters=counters,
@@ -328,7 +302,6 @@ def _run(
             "succeeded": counters.succeeded,
             "failed": counters.failed,
             "cache_hits": counters.cache_hits,
-            "mismatches": counters.mismatches,
             "elapsed_seconds": elapsed,
             "interrupted": interrupted,
         },
@@ -340,10 +313,8 @@ def _run(
         succeeded=counters.succeeded,
         failed=counters.failed,
         cache_hits=counters.cache_hits,
-        mismatches=counters.mismatches,
         interrupted=interrupted,
         elapsed_seconds=elapsed,
-        mismatch_cache_keys=list(counters.mismatch_cache_keys),
     )
 
 
@@ -356,8 +327,6 @@ class _Counters:
     succeeded: int = 0
     failed: int = 0
     cache_hits: int = 0
-    mismatches: int = 0
-    mismatch_cache_keys: list[str] = field(default_factory=list)
 
 
 # --- Source loading ------------------------------------------------------
@@ -506,7 +475,6 @@ def _process_source(
     producers: dict[str, Producer],
     producer_factory: Callable[[str], Producer],
     config: Config,
-    verify: bool,
     retry_failed: bool,
     producer_filter: str | None,
     counters: _Counters,
@@ -517,17 +485,13 @@ def _process_source(
     """
     succeeded, failed = _existing_attempts(conn, source.source_id)
 
-    if verify:
-        # Re-run every successful producer; byte-compare the output.
-        to_run = list(succeeded)
-    else:
-        to_run = route(
-            extension=source.current_path.suffix.lower(),
-            tags=list(source.tags),
-            succeeded=succeeded,
-            failed=failed,
-            retry_failed=retry_failed,
-        )
+    to_run = route(
+        extension=source.current_path.suffix.lower(),
+        tags=list(source.tags),
+        succeeded=succeeded,
+        failed=failed,
+        retry_failed=retry_failed,
+    )
 
     if producer_filter is not None:
         to_run = [p for p in to_run if p == producer_filter]
@@ -544,38 +508,26 @@ def _process_source(
             producer_config=spec.config,
         )
 
-        if verify:
-            parts.append(
-                _verify_one(
-                    source=source,
-                    producer=producer,
-                    spec=spec,
-                    cache_key=cache_key,
-                    root=root,
-                    counters=counters,
-                )
-            )
-        else:
-            # If this producer is in the failed set, the caller has
-            # asked for a retry (routing would not have included it
-            # otherwise). Delete the cached failure so write_artifact
-            # writes fresh bytes rather than short-circuiting on the
-            # existing row (SPEC §14.3).
-            if name in failed:
-                delete_artifact(root, conn, cache_key)
+        # If this producer is in the failed set, the caller has asked
+        # for a retry (routing would not have included it otherwise).
+        # Delete the cached failure so write_artifact writes fresh
+        # bytes rather than short-circuiting on the existing row
+        # (SPEC §14.3 + §6.2 at v0.1.7).
+        if name in failed:
+            delete_artifact(root, conn, cache_key)
 
-            parts.append(
-                _run_one(
-                    source=source,
-                    name=name,
-                    producer=producer,
-                    spec=spec,
-                    cache_key=cache_key,
-                    root=root,
-                    conn=conn,
-                    counters=counters,
-                )
+        parts.append(
+            _run_one(
+                source=source,
+                name=name,
+                producer=producer,
+                spec=spec,
+                cache_key=cache_key,
+                root=root,
+                conn=conn,
+                counters=counters,
             )
+        )
     return parts
 
 
@@ -642,61 +594,6 @@ def _run_one(
         },
     )
     return f"{name} (failed, {elapsed:.1f}s)"
-
-
-def _verify_one(
-    *,
-    source: _SourceRecord,
-    producer: Producer,
-    spec: ExtractorConfig,
-    cache_key: str,
-    root: Path,
-    counters: _Counters,
-) -> str:
-    """Re-run the producer and byte-compare with the cached content.
-    Writes nothing. Mismatch surfaces as ERROR log + counter bump.
-    """
-    result = producer.produce(
-        source.current_path, source.source_id, spec.config
-    )
-    if result.status != "success":
-        # Re-running produced a failure; that's itself a mismatch with
-        # the cached success. Count and record.
-        counters.mismatches += 1
-        counters.mismatch_cache_keys.append(cache_key)
-        logger.error(
-            "verify_mismatch",
-            extra={
-                "event": "verify_mismatch",
-                "cache_key": cache_key,
-                "reason": "re-run produced status=failed",
-                "error_message": result.error_message,
-            },
-        )
-        return f"{producer.name} (VERIFY MISMATCH: re-run failed)"
-
-    cached_path = root / "cache" / content_path_rel(cache_key) / "content"
-    cached_bytes = cached_path.read_bytes()
-    if result.content is None or result.content != cached_bytes:
-        counters.mismatches += 1
-        counters.mismatch_cache_keys.append(cache_key)
-        cached_hash = hashlib.sha256(cached_bytes).hexdigest()
-        rerun_hash = hashlib.sha256(result.content or b"").hexdigest()
-        logger.error(
-            "verify_mismatch",
-            extra={
-                "event": "verify_mismatch",
-                "cache_key": cache_key,
-                "cached_sha256": cached_hash,
-                "rerun_sha256": rerun_hash,
-            },
-        )
-        return (
-            f"{producer.name} (VERIFY MISMATCH: "
-            f"cached {cached_hash[:12]}… rerun {rerun_hash[:12]}…)"
-        )
-
-    return f"{producer.name} (verify ok)"
 
 
 # --- Catalogue helpers ---------------------------------------------------

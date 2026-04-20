@@ -9,7 +9,7 @@ Phase 1 surface:
     pkm migrate [--dry-run]
     pkm rebuild-catalogue [--dry-run]
     pkm ingest
-    pkm extract [--verify] [--retry-failed] [--source HASH] [--producer NAME]
+    pkm extract [--retry-failed] [--source HASH] [--producer NAME]
 
 Design notes:
 
@@ -202,15 +202,6 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     p_extract.add_argument(
-        "--verify",
-        action="store_true",
-        help=(
-            "re-run every successful artifact and byte-compare "
-            "against the cached content; exits non-zero on any "
-            "mismatch; writes nothing"
-        ),
-    )
-    p_extract.add_argument(
         "--retry-failed",
         action="store_true",
         help=(
@@ -305,30 +296,19 @@ def _cmd_extract(args: argparse.Namespace, config: Config) -> int:
     result = extract(
         config.root_dir,
         config,
-        verify=args.verify,
         retry_failed=args.retry_failed,
         source_prefix=args.source,
         producer_name=args.producer,
         progress=lambda line: print(line),
     )
-
-    if args.verify:
-        print(
-            f"verify: {result.processed} source(s), "
-            f"{result.mismatches} mismatch(es) "
-            f"({result.elapsed_seconds:.1f}s)"
-        )
-        if result.mismatches > 0:
-            return 1
-    else:
-        print(
-            f"extract: processed {result.processed}/{result.total_sources} "
-            f"sources, {result.succeeded} succeeded, "
-            f"{result.failed} failed, {result.cache_hits} cache hits "
-            f"({result.elapsed_seconds:.1f}s)"
-        )
-        if result.interrupted:
-            return 1
+    print(
+        f"extract: processed {result.processed}/{result.total_sources} "
+        f"sources, {result.succeeded} succeeded, "
+        f"{result.failed} failed, {result.cache_hits} cache hits "
+        f"({result.elapsed_seconds:.1f}s)"
+    )
+    if result.interrupted:
+        return 1
     return 0
 
 

@@ -143,7 +143,6 @@ def test_extract_over_md_and_eml_produces_artifacts(
     assert result.succeeded == 2
     assert result.failed == 0
     assert result.cache_hits == 0
-    assert result.mismatches == 0
     assert not result.interrupted
 
     rows = _artifact_rows(bench.root)
@@ -174,51 +173,6 @@ def test_second_extract_is_a_no_op(tmp_path: Path) -> None:
     assert result.succeeded == 0
     assert result.failed == 0
     assert result.cache_hits == 0
-
-
-# --- Verify: read-only check of cache integrity --------------------------
-
-
-def test_verify_on_clean_cache_reports_zero_mismatches(
-    tmp_path: Path,
-) -> None:
-    bench = _bench(
-        tmp_path, [("note.md", "# Hello\n\nBody.\n")]
-    )
-    extract(bench.root, bench.config)
-
-    result = extract(bench.root, bench.config, verify=True)
-    assert result.mismatches == 0
-    assert result.mismatch_cache_keys == []
-    # Verify must not write — the artifacts count is unchanged.
-    assert len(_artifact_rows(bench.root)) == 1
-
-
-def test_verify_detects_corrupted_cache_content(
-    tmp_path: Path, caplog: pytest.LogCaptureFixture,
-) -> None:
-    bench = _bench(
-        tmp_path, [("note.md", "# Hello\n\nBody.\n")]
-    )
-    extract(bench.root, bench.config)
-
-    # Corrupt the cached content file for the one artifact we have.
-    with open_catalogue(bench.root) as conn:
-        (content_path,) = conn.execute(
-            "SELECT content_path FROM artifacts"
-        ).fetchone()
-    content_file = bench.root / "cache" / content_path / "content"
-    content_file.write_bytes(b"corrupted bytes not matching pandoc output")
-
-    with caplog.at_level("ERROR", logger="pkm.extract"):
-        result = extract(bench.root, bench.config, verify=True)
-
-    assert result.mismatches == 1
-    assert len(result.mismatch_cache_keys) == 1
-    assert any(
-        r.levelname == "ERROR" and "verify_mismatch" in r.message
-        for r in caplog.records
-    )
 
 
 # --- retry_failed re-runs failures --------------------------------------
