@@ -9,7 +9,7 @@ Phase 1 surface:
     pkm migrate [--dry-run]
     pkm rebuild-catalogue [--dry-run]
     pkm ingest
-    pkm extract                  # placeholder (Step 7g), exits non-zero
+    pkm extract [--verify] [--retry-failed] [--source HASH] [--producer NAME]
 
 Design notes:
 
@@ -44,6 +44,7 @@ from pathlib import Path
 
 from pkm.catalogue import run_migrations
 from pkm.config import Config, ConfigError, load_config
+from pkm.extract import extract
 from pkm.ingest import ingest_sources
 from pkm.logging_setup import setup_logging
 from pkm.rebuild import rebuild_artifacts
@@ -51,12 +52,6 @@ from pkm.rebuild import rebuild_artifacts
 logger = logging.getLogger(__name__)
 
 DEFAULT_CONFIG_PATH: Path = Path("~/knowledge/config.yaml")
-
-_NOT_IMPLEMENTED_MESSAGE = (
-    "`pkm {name}` is declared in the CLI surface but is not wired up "
-    "in Phase 1. It is scheduled for Step 7g (extraction pipeline). "
-    "Until then it exits non-zero rather than silently succeeding."
-)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -195,14 +190,47 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
 
-    subparsers.add_parser(
+    p_extract = subparsers.add_parser(
         "extract",
-        help="Run extractors over registered sources (not implemented).",
+        help="Run extractors over registered sources.",
         description=(
-            "Not yet implemented — scheduled for Phase 1 Step 7g. "
-            "When wired, applies the routing policy (§7.3) and runs "
-            "producers over sources, caching outcomes."
+            "Apply the routing policy (SPEC §7.3) to every "
+            "registered source and run the producers it selects, "
+            "writing artifacts through the cache layer. Idempotent: "
+            "a second run produces zero new artifacts (routing "
+            "returns [] for fully-extracted sources)."
         ),
+    )
+    p_extract.add_argument(
+        "--verify",
+        action="store_true",
+        help=(
+            "re-run every successful artifact and byte-compare "
+            "against the cached content; exits non-zero on any "
+            "mismatch; writes nothing"
+        ),
+    )
+    p_extract.add_argument(
+        "--retry-failed",
+        action="store_true",
+        help=(
+            "include previously-failed producers back in the "
+            "candidate set (SPEC §14.3: failures are explicit to "
+            "re-run)"
+        ),
+    )
+    p_extract.add_argument(
+        "--source",
+        metavar="HASH_PREFIX",
+        help=(
+            "restrict to sources whose source_id starts with this "
+            "lowercase hex prefix (minimum 16 characters)"
+        ),
+    )
+    p_extract.add_argument(
+        "--producer",
+        choices=["pandoc", "docling", "unstructured"],
+        help="restrict to the named producer",
     )
 
     return parser
@@ -274,8 +302,34 @@ def _cmd_ingest(args: argparse.Namespace, config: Config) -> int:
 
 
 def _cmd_extract(args: argparse.Namespace, config: Config) -> int:
-    print(_NOT_IMPLEMENTED_MESSAGE.format(name="extract"), file=sys.stderr)
-    return 1
+    result = extract(
+        config.root_dir,
+        config,
+        verify=args.verify,
+        retry_failed=args.retry_failed,
+        source_prefix=args.source,
+        producer_name=args.producer,
+        progress=lambda line: print(line),
+    )
+
+    if args.verify:
+        print(
+            f"verify: {result.processed} source(s), "
+            f"{result.mismatches} mismatch(es) "
+            f"({result.elapsed_seconds:.1f}s)"
+        )
+        if result.mismatches > 0:
+            return 1
+    else:
+        print(
+            f"extract: processed {result.processed}/{result.total_sources} "
+            f"sources, {result.succeeded} succeeded, "
+            f"{result.failed} failed, {result.cache_hits} cache hits "
+            f"({result.elapsed_seconds:.1f}s)"
+        )
+        if result.interrupted:
+            return 1
+    return 0
 
 
 # Explicit subcommand table. Grep-friendly: searching for "migrate"

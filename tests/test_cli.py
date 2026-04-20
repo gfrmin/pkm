@@ -228,20 +228,6 @@ def test_ingest_missing_manifest_exits_one(
     assert "sources manifest" in err.lower() or "not found" in err.lower()
 
 
-# --- Placeholders --------------------------------------------------------
-
-
-def test_extract_placeholder_exits_nonzero(
-    tmp_root: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str],
-) -> None:
-    cfg = _make_config(tmp_root, tmp_path / "config.yaml")
-    rc = main(["--config", str(cfg), "extract"])
-    assert rc == 1
-    err = capsys.readouterr().err
-    assert "not wired up" in err.lower() or "not implemented" in err.lower()
-    assert "Step 7" in err
-
-
 # --- Config error surfaces clearly --------------------------------------
 
 

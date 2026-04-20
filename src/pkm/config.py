@@ -21,8 +21,9 @@ of configuration.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 import yaml
 
@@ -34,11 +35,31 @@ class ConfigError(Exception):
 
 
 @dataclass(frozen=True)
-class Config:
-    """The subset of settings the Phase 1 CLI needs to function.
+class ExtractorConfig:
+    """The ``config.yaml`` ``extractors.<name>`` subtree (SPEC §9).
 
-    More fields will be added as Phase 1 progresses (producer
-    versions + configs at Step 7, log-level override, etc.).
+    ``version`` is the exact installed tool version pkm expects; a
+    mismatch at producer construction time raises
+    ``ProducerVersionMismatchError`` and halts extraction. ``config``
+    is the producer-internal parameter dict (e.g. ``{"ocr": True,
+    "table_structure": True}`` for docling); the producer's own
+    constructor validates its shape. Both fields participate in the
+    cache key via ``compute_cache_key`` (SPEC §4.2).
+    """
+
+    version: str
+    config: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class Config:
+    """The settings the Phase 1 CLI needs to function.
+
+    ``extractors`` is populated only when config.yaml supplies it.
+    Commands that don't need extractors (``pkm migrate``,
+    ``pkm rebuild-catalogue``, ``pkm ingest``) accept an empty dict;
+    ``pkm extract`` raises when a producer it would call is missing
+    from the dict.
     """
 
     root_dir: Path
@@ -48,6 +69,10 @@ class Config:
     """The config file this was loaded from. Useful for error
     messages and for log events; not part of the data itself.
     """
+
+    extractors: dict[str, ExtractorConfig] = field(default_factory=dict)
+    """Extractor configs keyed by producer name. Empty if the
+    config.yaml ``extractors`` section is absent."""
 
 
 def load_config(path: Path) -> Config:
@@ -94,4 +119,50 @@ def load_config(path: Path) -> Config:
 
     root_dir = Path(root_dir_raw).expanduser().resolve()
 
-    return Config(root_dir=root_dir, source=path)
+    extractors = _parse_extractors(raw.get("extractors"), path)
+
+    return Config(root_dir=root_dir, source=path, extractors=extractors)
+
+
+def _parse_extractors(
+    raw: Any, config_path: Path
+) -> dict[str, ExtractorConfig]:
+    """Parse the ``extractors`` section of ``config.yaml``, validating
+    strictly. Missing section → empty dict (callers decide whether
+    that's an error). Malformed shape → ``ConfigError`` with a
+    message naming the offending key.
+    """
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise ConfigError(
+            f"config at {config_path}: `extractors` must be a mapping, "
+            f"got {type(raw).__name__}"
+        )
+
+    result: dict[str, ExtractorConfig] = {}
+    for name, spec in raw.items():
+        if not isinstance(name, str):
+            raise ConfigError(
+                f"config at {config_path}: extractor name must be a "
+                f"string, got {type(name).__name__}"
+            )
+        if not isinstance(spec, dict):
+            raise ConfigError(
+                f"config at {config_path}: extractors.{name} must be a "
+                f"mapping, got {type(spec).__name__}"
+            )
+        version = spec.get("version")
+        if not isinstance(version, str):
+            raise ConfigError(
+                f"config at {config_path}: extractors.{name}.version "
+                f"must be a string, got {type(version).__name__}"
+            )
+        inner = spec.get("config", {})
+        if not isinstance(inner, dict):
+            raise ConfigError(
+                f"config at {config_path}: extractors.{name}.config "
+                f"must be a mapping, got {type(inner).__name__}"
+            )
+        result[name] = ExtractorConfig(version=version, config=inner)
+    return result
