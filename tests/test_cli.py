@@ -232,9 +232,10 @@ def test_ingest_missing_manifest_exits_one(
 
 
 def test_extract_placeholder_exits_nonzero(
-    capsys: pytest.CaptureFixture[str],
+    tmp_root: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str],
 ) -> None:
-    rc = main(["extract"])
+    cfg = _make_config(tmp_root, tmp_path / "config.yaml")
+    rc = main(["--config", str(cfg), "extract"])
     assert rc == 1
     err = capsys.readouterr().err
     assert "not wired up" in err.lower() or "not implemented" in err.lower()

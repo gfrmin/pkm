@@ -8,8 +8,8 @@ Phase 1 surface:
 
     pkm migrate [--dry-run]
     pkm rebuild-catalogue [--dry-run]
-    pkm ingest                   # placeholder (Step 7), exits non-zero
-    pkm extract                  # placeholder (Step 7), exits non-zero
+    pkm ingest
+    pkm extract                  # placeholder (Step 7g), exits non-zero
 
 Design notes:
 
@@ -25,8 +25,12 @@ Design notes:
              or an unhandled exception that's not a config error).
         2  — configuration error (missing config, malformed config,
              argparse argument errors).
-  - Logging is configured via ``basicConfig`` here. Step 7 will
-    replace this with JSONL file output in ``logging_setup.py``.
+  - Logging goes to JSONL files via ``pkm.logging_setup`` (SPEC §10).
+    The root logger is configured once per invocation in ``main``
+    before the subcommand dispatches. CLI user-facing output (the
+    one-line summaries after each command) is separate and goes to
+    stdout; stderr carries error messages; the JSONL file carries
+    structured events.
 """
 
 from __future__ import annotations
@@ -41,6 +45,7 @@ from pathlib import Path
 from pkm.catalogue import run_migrations
 from pkm.config import Config, ConfigError, load_config
 from pkm.ingest import ingest_sources
+from pkm.logging_setup import setup_logging
 from pkm.rebuild import rebuild_artifacts
 
 logger = logging.getLogger(__name__)
@@ -49,9 +54,8 @@ DEFAULT_CONFIG_PATH: Path = Path("~/knowledge/config.yaml")
 
 _NOT_IMPLEMENTED_MESSAGE = (
     "`pkm {name}` is declared in the CLI surface but is not wired up "
-    "in Phase 1. It is scheduled for Step 7 (ingestion and extraction "
-    "pipeline). Until then it exits non-zero rather than silently "
-    "succeeding."
+    "in Phase 1. It is scheduled for Step 7g (extraction pipeline). "
+    "Until then it exits non-zero rather than silently succeeding."
 )
 
 
@@ -59,22 +63,41 @@ def main(argv: list[str] | None = None) -> int:
     """Entry point. Returns the process exit code; does not call
     ``sys.exit``. The installed ``pkm`` console script and
     ``python -m pkm`` both wrap the return value.
+
+    Order of operations:
+
+      1. Parse argv. ``--help``/``--version`` / usage errors exit
+         via ``SystemExit`` before returning from here (argparse
+         default).
+      2. Return 1 if no subcommand was given (the top-level usage
+         message goes to stderr).
+      3. Load config. A missing or malformed file surfaces at exit
+         code 2 with "config error:" on stderr — before any
+         logging or subcommand side effects.
+      4. Configure the JSONL logger against ``config.root_dir`` at
+         the requested level.
+      5. Dispatch to the subcommand handler. Any exception that
+         escapes the handler is logged via ``logger.exception`` and
+         surfaces at exit code 1 with "error:" on stderr.
     """
     parser = _build_parser()
     args = parser.parse_args(argv)
-
-    _configure_logging(args)
 
     if args.subcommand is None:
         parser.print_help(sys.stderr)
         return 1
 
-    handler = _SUBCOMMANDS[args.subcommand]
     try:
-        return handler(args)
+        config = _load_config(args)
     except ConfigError as e:
         print(f"config error: {e}", file=sys.stderr)
         return 2
+
+    _configure_logging(args, config)
+
+    handler = _SUBCOMMANDS[args.subcommand]
+    try:
+        return handler(args, config)
     except Exception as e:
         logger.exception("unhandled error in pkm %s", args.subcommand)
         print(f"error: {e}", file=sys.stderr)
@@ -176,7 +199,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "extract",
         help="Run extractors over registered sources (not implemented).",
         description=(
-            "Not yet implemented — scheduled for Phase 1 Step 7. "
+            "Not yet implemented — scheduled for Phase 1 Step 7g. "
             "When wired, applies the routing policy (§7.3) and runs "
             "producers over sources, caching outcomes."
         ),
@@ -185,16 +208,13 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _configure_logging(args: argparse.Namespace) -> None:
+def _configure_logging(args: argparse.Namespace, config: Config) -> None:
     level = (
         logging.DEBUG
         if args.verbose
         else getattr(logging, args.log_level)
     )
-    logging.basicConfig(
-        level=level,
-        format="%(levelname)s %(name)s: %(message)s",
-    )
+    setup_logging(config.root_dir, level)
 
 
 def _load_config(args: argparse.Namespace) -> Config:
@@ -204,8 +224,7 @@ def _load_config(args: argparse.Namespace) -> Config:
 # --- Subcommand handlers -------------------------------------------------
 
 
-def _cmd_migrate(args: argparse.Namespace) -> int:
-    config = _load_config(args)
+def _cmd_migrate(args: argparse.Namespace, config: Config) -> int:
     versions = run_migrations(config.root_dir, dry_run=args.dry_run)
     if args.dry_run:
         if versions:
@@ -223,8 +242,9 @@ def _cmd_migrate(args: argparse.Namespace) -> int:
     return 0
 
 
-def _cmd_rebuild_catalogue(args: argparse.Namespace) -> int:
-    config = _load_config(args)
+def _cmd_rebuild_catalogue(
+    args: argparse.Namespace, config: Config
+) -> int:
     result = rebuild_artifacts(config.root_dir, dry_run=args.dry_run)
     if args.dry_run:
         print(
@@ -242,8 +262,7 @@ def _cmd_rebuild_catalogue(args: argparse.Namespace) -> int:
     return 0
 
 
-def _cmd_ingest(args: argparse.Namespace) -> int:
-    config = _load_config(args)
+def _cmd_ingest(args: argparse.Namespace, config: Config) -> int:
     result = ingest_sources(config.root_dir)
     print(
         f"ingested: scanned {result.scanned}, "
@@ -254,14 +273,14 @@ def _cmd_ingest(args: argparse.Namespace) -> int:
     return 0
 
 
-def _cmd_extract(args: argparse.Namespace) -> int:
+def _cmd_extract(args: argparse.Namespace, config: Config) -> int:
     print(_NOT_IMPLEMENTED_MESSAGE.format(name="extract"), file=sys.stderr)
     return 1
 
 
 # Explicit subcommand table. Grep-friendly: searching for "migrate"
 # finds both this entry and the function that handles it.
-_SUBCOMMANDS: dict[str, Callable[[argparse.Namespace], int]] = {
+_SUBCOMMANDS: dict[str, Callable[[argparse.Namespace, Config], int]] = {
     "migrate": _cmd_migrate,
     "rebuild-catalogue": _cmd_rebuild_catalogue,
     "ingest": _cmd_ingest,
