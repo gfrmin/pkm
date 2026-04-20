@@ -1,6 +1,6 @@
 # SPEC.md — technical specification
 
-Version: 0.1.6 (draft)
+Version: 0.1.7 (draft)
 Status: Foundation for Phase 1 (extraction layer with content-addressed
 caching). This spec is the contract. Changes require a separate commit
 with justification.
@@ -290,6 +290,37 @@ untouched. The user's remedy is to run `pkm rebuild-catalogue`,
 which reconciles the catalogue back to the filesystem's actual
 state (dropping rows whose files are gone and recreating rows for
 any files whose metadata is intact but unrecorded).
+
+**Deletion is a single sanctioned pathway.** The cache is
+append-only under normal operation: `write_artifact` is idempotent
+(a second write with the same `cache_key` is a no-op), and no
+command rewrites existing rows in place. The one legitimate way an
+artifact is ever removed from the cache is `pkm extract
+--retry-failed`, which uses `cache.delete_artifact(root, conn,
+cache_key)` to clear a cached failure before re-running the
+producer. Without this path, retry_failed would be a silent no-op:
+`write_artifact`'s idempotency check sees the existing row and
+short-circuits, leaving the failed row behind no matter how many
+times the user retries.
+
+`delete_artifact` removes the cache directory contents first, then
+deletes the `artifacts` row inside a transaction. The file-first
+ordering is deliberate: if `delete_artifact` is interrupted
+mid-way, the worst-case residue is a cache directory without a
+row, which the next consistency sweep collects as an orphan. The
+reverse ordering would leave a row pointing at missing files —
+the asymmetric-corruption case described above, which is much
+harder to recover from.
+
+`delete_artifact` is called only by the extract layer under
+`retry_failed`, guarded by the routing-layer condition that the
+producer in question is in the source's `failed` set. New call
+sites for deletion MUST be considered carefully; the cache's
+append-only invariant is load-bearing for SPEC §14.1
+inspectability (an artifact that existed can be cited from logs
+forever) and for Phase 2 query semantics (downstream consumers
+trust that a cache_key once written stays valid until an explicit
+producer-version bump).
 
 ### 6.3 Transactions
 
@@ -729,6 +760,20 @@ numbered migration is added in sequence.
 
 ## 15. Change log
 
+- 0.1.7 (draft): §6.2 gains a "Deletion is a single sanctioned
+  pathway" paragraph. The cache's append-only discipline was
+  implicit through v0.1.6; the `--retry-failed` implementation
+  in 7g made it explicit that one code path does delete cache
+  entries, and the spec now names it. Rationale for pinning:
+  without the named exception, any future path tempted to DELETE
+  from the `artifacts` table (a 7h triage helper, a maintenance
+  command, a cleanup cron) would look equally legitimate. The
+  §6.2 paragraph declares `cache.delete_artifact` the only
+  sanctioned deletion call, documents the file-first ordering
+  (interrupted deletion leaves at worst a sweep-collectable
+  orphan, never a row-without-files case), and notes the
+  append-only invariant as load-bearing for §14.1 inspectability
+  and Phase 2 query semantics. No schema change, no code change.
 - 0.1.6 (draft): Two edits, both prompted by Step 7 implementation
   findings. §7.1 gains a "Note on hidden state in wrapper producers"
   paragraph that codifies the lesson from Step 7e: the Unstructured
