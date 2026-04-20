@@ -26,6 +26,54 @@ from pathlib import Path
 from typing import Any, Literal, Protocol, runtime_checkable
 
 
+class ProducerError(Exception):
+    """Base class for producer-layer problems surfaced at construction.
+
+    Subclasses distinguish the two modes a producer can refuse to
+    come up in: the installed tool's version disagrees with
+    ``config.yaml`` (``ProducerVersionMismatchError``), or the tool
+    could not be discovered at all (``ProducerDiscoveryError`` —
+    missing binary, unparseable ``--version`` output, or similar).
+
+    SPEC §14.5 makes these construction-time failures by contract:
+    version drift is a correctness bug because cache keys depend on
+    exact version strings.
+    """
+
+
+class ProducerVersionMismatchError(ProducerError):
+    """The installed tool's version differs from the expected value.
+
+    Raised by a producer's constructor when
+    ``installed_version() != expected_version``. The message names
+    both versions and states the remedy (edit config or install the
+    matching version); no further work begins in that process.
+    """
+
+    def __init__(
+        self, *, producer_name: str, expected: str, installed: str
+    ) -> None:
+        super().__init__(
+            f"{producer_name} version mismatch: config.yaml expects "
+            f"{expected!r}, installed is {installed!r}. edit config.yaml "
+            f"or install the matching {producer_name} version."
+        )
+        self.producer_name = producer_name
+        self.expected = expected
+        self.installed = installed
+
+
+class ProducerDiscoveryError(ProducerError):
+    """The installed tool could not be discovered.
+
+    Distinguishes "the tool is not there at all / its output is
+    shaped differently than we expect" from "the tool is there, but
+    the wrong version". Both are fatal at construction; keeping them
+    as separate types avoids conflating "install something" with
+    "edit the config version string".
+    """
+
+
 @dataclass(frozen=True)
 class ProducerResult:
     """The outcome of a single ``Producer.produce`` call (SPEC §7.1,
