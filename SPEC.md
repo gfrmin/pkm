@@ -1,6 +1,6 @@
 # SPEC.md — technical specification
 
-Version: 0.1.5 (draft)
+Version: 0.1.6 (draft)
 Status: Foundation for Phase 1 (extraction layer with content-addressed
 caching). This spec is the contract. Changes require a separate commit
 with justification.
@@ -341,6 +341,23 @@ Producers MUST:
   non-deterministic by nature (e.g., later LLM producers), the
   randomness source MUST appear in `config`.
 
+**Note on hidden state in wrapper producers.** Producers that wrap
+external libraries MUST audit those libraries for hidden dependencies
+on path, time, hostname, or other ambient state that leaks into the
+serialised output. This is not a hypothetical hazard: the Step 7e
+Unstructured producer discovered that its default JSON serialisation
+embeds the input filename into every element's `element_id` hash
+(via `Element.id_to_hash`), making byte-identical content at two
+different paths produce different cached bytes. The fix required
+nulling the path-dependent metadata fields AND recomputing the
+element IDs before serialisation. The canonical check for this class
+of bug is a test that runs the producer on the same byte content at
+two different paths and asserts byte-equal output
+(`test_cached_bytes_are_path_independent` in the Phase 1 test suite);
+every producer SHOULD have one. New producers default to the
+assumption that their wrapped library has such hidden dependencies
+until a passing test proves otherwise.
+
 ### 7.2 Initial extractors
 
 Phase 1 ships with exactly three extractors:
@@ -354,17 +371,51 @@ is needed, we'll consider abstraction.
 
 ### 7.3 Routing
 
-A simple routing policy decides which extractor to run for a given
-source. Phase 1 policy:
+A single Python function decides which producers to run on a given
+source. Not a rule engine, not configuration. Inputs: the source's
+file extension, its tags (from `sources.yaml`), and the set of
+producers already attempted on this source with their outcomes.
+Output: the ordered list of producers that should still run.
 
-1. Pandoc on everything.
-2. Docling on: anything Pandoc failed on, plus anything tagged as
-   layout-sensitive (`invoice`, `report`, `contract` — by user tag).
-3. Unstructured on: anything Docling can't handle (email formats,
-   odd formats), plus anything both others failed on.
+Phase 1 policy:
 
-The policy is implemented as a single Python function. No rule
-engine, no configuration. When it becomes complex, we'll revisit.
+1. **Pandoc** on every source whose extension Pandoc handles. Pandoc
+   is fast and covers the common text-and-document baseline.
+
+2. **Docling** on PDFs (always, format-based), and on any source
+   whose extension Docling handles and which is tagged as
+   layout-sensitive (`invoice`, `report`, `contract`). Docling also
+   runs as a *fallback* when Pandoc has failed on a source Docling
+   handles.
+
+3. **Unstructured** on email formats (`.eml`, `.msg` — always,
+   format-based). Unstructured also runs as a *fallback* in two
+   cases: when neither Pandoc nor Docling handles the source's
+   format (Unstructured is the catch-all for long-tail formats), and
+   when both Pandoc and Docling have failed on a source Unstructured
+   handles.
+
+Rationale for format-based defaults. File extension is a strong,
+mandatory signal of content shape. Tags are optional user metadata
+and coverage will always be patchy. A routing policy that depends
+on tags for the common cases (every PDF, every email) would
+underextract whenever a tag is missing; format triggers ensure the
+obvious structural cases are covered regardless of tagging
+diligence. Tags are for *escalation* — pushing a `.md` invoice
+through Docling because the user said so — not for gating defaults.
+
+Fallback rules exist because each producer can fail on specific
+documents even within its supported formats (malformed PDFs,
+encoding quirks, tool bugs). A failure in one producer SHOULD
+trigger the next applicable one, with the catalogue recording both
+the failure and the recovery attempt.
+
+Running the router on a source with no outstanding work returns an
+empty list, which is how `pkm extract` achieves idempotency against
+already-extracted sources. Successes are never re-run by routing
+(cache invalidation is producer-version-bump territory, SPEC §14.5).
+Re-running with `--retry-failed` includes previously-failed
+producers back in the candidate set.
 
 ## 8. Source registration
 
@@ -678,6 +729,22 @@ numbered migration is added in sequence.
 
 ## 15. Change log
 
+- 0.1.6 (draft): Two edits, both prompted by Step 7 implementation
+  findings. §7.1 gains a "Note on hidden state in wrapper producers"
+  paragraph that codifies the lesson from Step 7e: the Unstructured
+  library's default JSON serialisation embeds the input filename
+  into element_id hashes, which would have silently fragmented the
+  cache across byte-identical content at different paths. The note
+  mandates a path-independence test for every wrapper producer and
+  documents the canonical check pattern. §7.3 is rewritten to
+  reflect format-based routing defaults (Docling eagerly on PDFs,
+  Unstructured eagerly on email) with tags as an escalation
+  mechanism rather than a gate. Prior §7.3 wording depended on tags
+  for the common cases; implementation reasoning pointed out that
+  tag coverage will always be patchy and file extension is a
+  stronger mandatory signal. Fallback rules (Docling on Pandoc
+  failures, Unstructured on both-failed) are promoted from implicit
+  to explicit.
 - 0.1.5 (draft): Tag storage normalised. §5.1 replaces the
   `tags VARCHAR[]` column on `sources` with a dedicated
   `source_tags(source_id, tag)` table, primary-keyed on the pair,
