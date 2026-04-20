@@ -1,6 +1,6 @@
 # SPEC.md — technical specification
 
-Version: 0.1.7 (draft)
+Version: 0.1.8 (draft)
 Status: Foundation for Phase 1 (extraction layer with content-addressed
 caching). This spec is the contract. Changes require a separate commit
 with justification.
@@ -364,30 +364,54 @@ Producers MUST:
   `content_encoding`.
 - Never raise exceptions that escape `produce()`. Any failure is
   caught and returned as `status='failed'` with a message.
-- Be deterministic given the same input *content* (as identified by
-  `input_hash`) and the same `config`. `input_path` is an I/O handle
-  used to read the bytes at call time; it is NOT part of the
-  determinism contract. Two machines with the same byte content at
-  different paths MUST produce the same output. If a producer is
-  non-deterministic by nature (e.g., later LLM producers), the
-  randomness source MUST appear in `config`.
 
-**Note on hidden state in wrapper producers.** Producers that wrap
-external libraries MUST audit those libraries for hidden dependencies
-on path, time, hostname, or other ambient state that leaks into the
-serialised output. This is not a hypothetical hazard: the Step 7e
-Unstructured producer discovered that its default JSON serialisation
-embeds the input filename into every element's `element_id` hash
-(via `Element.id_to_hash`), making byte-identical content at two
-different paths produce different cached bytes. The fix required
-nulling the path-dependent metadata fields AND recomputing the
-element IDs before serialisation. The canonical check for this class
-of bug is a test that runs the producer on the same byte content at
-two different paths and asserts byte-equal output
-(`test_cached_bytes_are_path_independent` in the Phase 1 test suite);
-every producer SHOULD have one. New producers default to the
-assumption that their wrapped library has such hidden dependencies
-until a passing test proves otherwise.
+**Determinism contract.** Producers produce *semantically*
+equivalent output given the same input content and config. Byte-
+level determinism across runs is not required; ML-backed producers
+may produce output that varies at sub-semantic levels (floating-
+point layout coordinates, token-level timestamps, inference-noise
+scores, and similar) between runs on the same input.
+
+The cache is keyed on `(input_hash, producer_name, producer_version,
+producer_config_hash)` — not on output bytes. A cache hit means
+"we have already run this producer with these inputs; reuse the
+cached output" — not "this is the canonical output that would be
+reproduced bit-exactly if we ran it now." Output bytes written
+once are preserved; the system never overwrites an artifact with a
+fresh run of the same producer at the same version. Re-running
+only happens via explicit `--retry-failed` after a recorded
+failure (see §14.3).
+
+`input_path` remains an I/O handle, not part of the cache key:
+two machines with byte-identical content at different paths MUST
+produce cache keys that agree. Non-deterministic producers (e.g.,
+future LLM-backed producers with a nondet inference path) MUST
+either make the randomness source appear in `config` (so it is
+captured in the cache key) or accept that cross-machine cache
+parity is not guaranteed and document that fact in the producer's
+own spec.
+
+**Note on hidden-input audits.** Producers that wrap external
+libraries MUST audit those libraries for hidden dependencies that
+would cause byte-identical inputs to be misidentified as different
+inputs — specifically, anything that leaks path, time, hostname,
+or ambient state into identifiers downstream consumers will use to
+compare content. The Step 7e Unstructured case is the canonical
+prior-art example: `Element.id_to_hash` baked the source filename
+into element IDs, which meant downstream consumers keying on those
+IDs would have observed the same content under different paths as
+different content. The fix required nulling the path-dependent
+metadata fields AND recomputing the element IDs before
+serialisation, so that the content-derived identifiers in the
+producer's output are path-independent.
+
+This is distinct from byte-level output variance, which is
+acceptable under the determinism contract above. The canonical
+check is `test_cache_key_is_path_independent` — assert that
+`compute_cache_key` returns the same value for the same content
+at different paths. Byte-equality of producer output across paths
+(or across runs on the same path) is neither required nor
+expected.
 
 ### 7.2 Initial extractors
 
@@ -760,6 +784,32 @@ numbered migration is added in sequence.
 
 ## 15. Change log
 
+- 0.1.8 (draft): §7.1 determinism contract corrected. The prior
+  wording required byte-level determinism ("be deterministic
+  given the same input content and config"), which is neither
+  achievable nor necessary for producers that wrap non-
+  deterministic ML libraries. Step 7h's first real-corpus run
+  surfaced this: Docling produced different floating-point bbox
+  coordinates across three runs on the same PDF (crhk utility
+  bills, 14% of 35 Docling extractions were non-stable at the
+  byte level). The coordinates differ at the fourth-fifth decimal
+  place — semantically meaningless, but byte-unequal.
+  The corrected contract says producers produce *semantically*
+  equivalent output; the cache is keyed on
+  `(input_hash, producer_name, producer_version,
+  producer_config_hash)` rather than on output bytes; once an
+  artifact is written it is never overwritten except through
+  explicit `--retry-failed`. The §7.1 Note on hidden-input audits
+  is reframed around what *would* cause inputs to be
+  misidentified as different inputs — path/time/hostname leaking
+  into identifiers downstream consumers use to compare content —
+  which remains a real discipline (the Unstructured `element_id`
+  fix in 7e stays). The canonical path-independence test is
+  renamed from `test_cached_bytes_are_path_independent` to
+  `test_cache_key_is_path_independent`. The `--verify` flag on
+  `pkm extract`, which implemented byte-equality verification, is
+  removed in the corresponding code commit — it was asserting an
+  invariant that no longer holds.
 - 0.1.7 (draft): §6.2 gains a "Deletion is a single sanctioned
   pathway" paragraph. The cache's append-only discipline was
   implicit through v0.1.6; the `--retry-failed` implementation
