@@ -117,6 +117,7 @@ class DoclingProducer:
     """
 
     name: str = "docling"
+    handled_formats: frozenset[str] = _SUPPORTED_EXTENSIONS
 
     def __init__(
         self, expected_version: str, config: dict[str, Any]

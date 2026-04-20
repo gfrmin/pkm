@@ -135,6 +135,13 @@ class Producer(Protocol):
         Any change in behaviour MUST bump ``version``; the
         producer-version mismatch check at startup enforces that
         cache keys correspond to the running code.
+      - ``handled_formats`` is the set of file extensions
+        (lowercase, dot-prefixed, e.g. ``".pdf"``) this producer
+        will attempt. The routing layer (§7.3) reads this class
+        attribute without constructing the producer, so it MUST be
+        available before ``__init__`` runs. Extensions outside
+        this set produce a ``status="failed"`` result without
+        invoking the underlying tool.
 
     Behavioural invariants of ``produce`` (SPEC §7.1 as of v0.1.2):
 
@@ -169,6 +176,7 @@ class Producer(Protocol):
 
     name: str
     version: str
+    handled_formats: frozenset[str]
 
     def produce(
         self,

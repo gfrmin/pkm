@@ -110,6 +110,7 @@ _SUPPORTED_EXTENSIONS: frozenset[str] = frozenset(
         ".csv",
         ".tsv",
         # Documents (fallback; Pandoc/Docling usually preferred)
+        ".doc",
         ".docx",
         ".odt",
         ".rtf",
@@ -161,6 +162,7 @@ class UnstructuredProducer:
     """
 
     name: str = "unstructured"
+    handled_formats: frozenset[str] = _SUPPORTED_EXTENSIONS
 
     def __init__(
         self, expected_version: str, config: dict[str, Any]

@@ -49,6 +49,7 @@ class TrivialProducer:
 
     name = "trivial"
     version = "0.0.1"
+    handled_formats = frozenset({".txt"})
 
     def produce(
         self,

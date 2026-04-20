@@ -102,6 +102,7 @@ class PandocProducer:
     """
 
     name: str = "pandoc"
+    handled_formats: frozenset[str] = frozenset(_EXTENSION_MAP)
 
     def __init__(self, expected_version: str) -> None:
         installed = installed_pandoc_version()
