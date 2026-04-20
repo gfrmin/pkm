@@ -82,6 +82,18 @@ from pkm.producer import (
 if TYPE_CHECKING:
     from docling.document_converter import DocumentConverter
 
+# Silence PIL's INFO-level logger. Docling's PDF pipeline uses PIL
+# (Pillow) internally for image handling and PIL emits "Corrupt JPEG
+# data: N extraneous bytes before marker 0x??" lines to the root
+# logger whenever it encounters a PDF with mildly off-spec embedded
+# JPEGs (common in invoice-style PDFs). The extractions succeed, so
+# these are diagnostic noise that doesn't belong in the JSONL event
+# log. Set at module import time for the same reason Unstructured's
+# logger is muted in producers/unstructured.py: once a wrapper
+# producer's library verbosity is identified as noise, silence it at
+# the module level — one library at a time, on demand.
+logging.getLogger("PIL").setLevel(logging.WARNING)
+
 logger = logging.getLogger(__name__)
 
 _SUPPORTED_EXTENSIONS: frozenset[str] = frozenset(
