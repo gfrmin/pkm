@@ -1,6 +1,6 @@
 # SPEC.md — technical specification
 
-Version: 0.1.8 (draft)
+Version: 0.1.9 (draft)
 Status: Foundation for Phase 1 (extraction layer with content-addressed
 caching). This spec is the contract. Changes require a separate commit
 with justification.
@@ -413,6 +413,30 @@ at different paths. Byte-equality of producer output across paths
 (or across runs on the same path) is neither required nor
 expected.
 
+**Uncatchable failure modes.** The `Producer.produce()` contract
+guarantees no uncaught Python exceptions escape the method. This
+guarantee holds for Python-level failures. It does not and cannot
+hold for failures outside Python's reach: OS signals (notably
+SIGKILL from the Linux OOM killer), kernel panics, hardware faults,
+or parent process termination.
+
+When such a failure occurs mid-extraction, the `pkm extract`
+process terminates without recording a failed-artifact row for the
+source in flight. The catalogue remains consistent (all prior
+transactions committed atomically; no partial write exists);
+however, the affected source will appear not-yet-processed on
+subsequent runs and will be re-attempted. If the underlying
+condition persists (e.g., a document whose extraction reliably
+exhausts memory), the same outcome will recur.
+
+Mitigating this class of failure is a Phase 2+ concern. Subprocess
+isolation per producer call, per-document memory limits, and
+pre-flight size estimation are all plausible approaches; none are
+required by the Phase 1 contract. Until such mitigations exist,
+operators of `pkm extract` on large corpora should expect
+occasional silent process termination on pathological inputs and
+rely on the idempotent re-run to recover.
+
 ### 7.2 Initial extractors
 
 Phase 1 ships with exactly three extractors:
@@ -784,6 +808,23 @@ numbered migration is added in sequence.
 
 ## 15. Change log
 
+- 0.1.9 (draft): §7.1 gains an "Uncatchable failure modes" paragraph
+  acknowledging that the `Producer.produce()` "never raises"
+  guarantee holds only for Python-catchable failures. OS signals
+  (notably SIGKILL from the Linux OOM killer), kernel panics, and
+  parent-process termination bypass Python entirely — there is no
+  opportunity for the producer to return `status="failed"`. The
+  Step 7h diagnostic surfaced this concretely: a third consecutive
+  run of the Docling producer on the same 12 MB PDF OOM-killed the
+  process at ~24 GB RSS, vapourising the Python interpreter. The
+  new paragraph documents the consequence (the catalogue stays
+  consistent, but there is no failed-artifact row for the killed
+  source; subsequent `pkm extract` runs re-attempt the source and
+  will recur on pathological inputs), and notes that mitigations
+  (subprocess isolation, per-document memory limits, pre-flight
+  size estimation) are Phase 2+ concerns not required by the
+  Phase 1 contract. No code change; pure documentation of an
+  operational reality the contract could not cover.
 - 0.1.8 (draft): §7.1 determinism contract corrected. The prior
   wording required byte-level determinism ("be deterministic
   given the same input content and config"), which is neither
