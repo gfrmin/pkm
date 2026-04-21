@@ -10,8 +10,15 @@ dependencies = [
     "pyyaml>=6.0",
     "pypandoc>=1.13",
     "docling>=2.14",
+    # Unstructured's optional format dependencies, added as specific
+    # formats have surfaced in real corpora. Do not pre-empt — add
+    # each only when a real extraction failure names it:
+    #   .xlsx                → openpyxl (already transitive)
+    #   .xls                 → xlrd (added 2026-04-21, 500-doc run)
+    #   .xls/.xlsx protected → msoffcrypto-tool (added 2026-04-21)
     "unstructured>=0.16",
     "msoffcrypto-tool>=6.0.0",
+    "xlrd>=2.0.2",
 ]
 
 [project.scripts]
