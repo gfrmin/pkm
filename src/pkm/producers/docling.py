@@ -130,9 +130,33 @@ defaults inside the producer — SPEC §14.5 requires exact-value
 agreement between config and behaviour."""
 
 _TIMEOUT_SECONDS = 300
-"""Per-document timeout. Docling on a layout-heavy PDF with OCR
-enabled can take 60-120 s; 300 s is the "pathological, kill it"
-ceiling. Revisit in 7h based on real-corpus numbers."""
+"""Per-document timeout, passed into Docling's
+``PdfPipelineOptions.document_timeout``.
+
+This ceiling is load-bearing for **memory**, not for time. Docling's
+working set grows the longer its pipeline runs on a single document,
+and a DocumentConverter reused across sources (the normal ``pkm
+extract`` pattern) accumulates state between calls. On a pathological
+PDF, letting the pipeline run longer does not produce a fuller
+extraction — it produces a larger resident set that eventually trips
+the OS OOM killer, which SIGKILLs the process without any Python-
+catchable signal (see SPEC §7.1 on uncatchable failure modes).
+
+300 s happens to be the value we pass AND the value Docling's own
+pipeline uses for ``document_timeout`` — our producer does not wrap
+Docling in a Python-side timeout separately. When the pipeline hits
+the limit, Docling emits a WARNING to its own logger, returns
+``ConversionStatus.PARTIAL_SUCCESS``, and serialises whatever state
+it has built so far. The producer surfaces this as
+``status="success"`` with ``producer_metadata.completion
+= "partial_timeout"`` (see ``completion`` above).
+
+Future readers tempted to raise this value because "300 s isn't
+enough time for big PDFs": don't. The 306 s outlier in the Step 7h
+real-corpus run was memory-bound; the Step 7h diagnostic confirmed
+that a third consecutive run on the same 12 MB PDF OOM-killed the
+process at ~24 GB RSS. A bigger time budget makes the OOM path more
+reliable, not the extraction fuller."""
 
 
 class DoclingProducer:
