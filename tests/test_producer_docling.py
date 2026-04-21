@@ -238,3 +238,115 @@ def test_corrupted_pdf_records_failure(
     assert result.content is None
     assert result.error_message is not None
     assert result.error_message  # non-empty
+
+
+# --- completion key: full, timeout-partial, other-partial ----------------
+#
+# The ``completion`` key in ``producer_metadata`` distinguishes three
+# extraction outcomes that the top-level ``status`` field cannot:
+#
+#   - ``"complete"``        — ConversionStatus.SUCCESS
+#   - ``"partial_timeout"`` — PARTIAL_SUCCESS with no per-error detail,
+#                             typically Docling's internal document_timeout
+#   - ``"partial_other"``   — PARTIAL_SUCCESS with populated errors
+#
+# The partial_* cases still carry ``status="success"`` per SPEC §7.1
+# (PARTIAL_SUCCESS is SPEC-permitted as success), but downstream
+# consumers can now discriminate without scanning cached bytes.
+
+
+def test_success_sets_completion_complete(producer: DoclingProducer) -> None:
+    """Real simple PDF round-trips to SUCCESS. The completion key
+    records this as "complete" so consumers don't have to re-infer."""
+    pdf = _FIXTURES / "simple.pdf"
+    result = producer.produce(pdf, "a" * 64, {})
+    assert result.status == "success"
+    assert result.producer_metadata["completion"] == "complete"
+    assert result.producer_metadata["conversion_status"] == "SUCCESS"
+
+
+def _fake_convert_result(status_name: str, errors: list[str]) -> object:
+    """Build a minimal stand-in for a ConversionResult.
+
+    Only the attributes the producer touches — status, errors, document
+    — are populated. ``document.model_dump_json`` returns a plausible
+    DoclingDocument JSON string; version is surfaced to metadata.
+    """
+    from unittest.mock import MagicMock
+
+    from docling.datamodel.base_models import ConversionStatus
+
+    status = getattr(ConversionStatus, status_name)
+    doc = MagicMock()
+    doc.version = "1.10.0"
+    doc.model_dump_json.return_value = (
+        '{"schema_name":"DoclingDocument","version":"1.10.0"}'
+    )
+    result = MagicMock()
+    result.status = status
+    result.errors = errors
+    result.document = doc
+    return result
+
+
+def test_partial_success_empty_errors_is_partial_timeout(
+    docling_version: str, tmp_path: Path,
+) -> None:
+    """PARTIAL_SUCCESS with empty result.errors is the diagnostic
+    signature of Docling's internal document_timeout firing. Tagged
+    as partial_timeout so the empty-warnings case is discoverable."""
+    p = DoclingProducer(
+        expected_version=docling_version,
+        config={"ocr": False, "table_structure": True},
+    )
+    # Bypass lazy converter construction by pre-setting the attribute.
+    from unittest.mock import MagicMock
+
+    fake_converter = MagicMock()
+    fake_converter.convert.return_value = _fake_convert_result(
+        "PARTIAL_SUCCESS", errors=[]
+    )
+    p._converter = fake_converter
+
+    pdf = tmp_path / "anything.pdf"
+    pdf.write_bytes(b"unused; the converter is mocked")
+
+    result = p.produce(pdf, "a" * 64, {})
+
+    assert result.status == "success"
+    assert result.producer_metadata["completion"] == "partial_timeout"
+    assert result.producer_metadata["conversion_status"] == "PARTIAL_SUCCESS"
+    assert result.producer_metadata["warnings"] == []
+
+
+def test_partial_success_with_errors_is_partial_other(
+    docling_version: str, tmp_path: Path,
+) -> None:
+    """PARTIAL_SUCCESS with non-empty result.errors — per-page load
+    failures, format-specific issues, anything Docling reports as
+    recoverable. Tagged partial_other; warnings preserve the detail."""
+    p = DoclingProducer(
+        expected_version=docling_version,
+        config={"ocr": False, "table_structure": True},
+    )
+    from unittest.mock import MagicMock
+
+    fake_converter = MagicMock()
+    fake_converter.convert.return_value = _fake_convert_result(
+        "PARTIAL_SUCCESS",
+        errors=["Page 6: Failed to load page.", "Page 7: Failed to load page."],
+    )
+    p._converter = fake_converter
+
+    pdf = tmp_path / "anything.pdf"
+    pdf.write_bytes(b"unused; the converter is mocked")
+
+    result = p.produce(pdf, "a" * 64, {})
+
+    assert result.status == "success"
+    assert result.producer_metadata["completion"] == "partial_other"
+    assert result.producer_metadata["conversion_status"] == "PARTIAL_SUCCESS"
+    assert result.producer_metadata["warnings"] == [
+        "Page 6: Failed to load page.",
+        "Page 7: Failed to load page.",
+    ]

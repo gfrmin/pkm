@@ -50,6 +50,26 @@ Output (on success):
     schema version independent of the producer's). Not in the
     cache key — a schema bump that matters is a producer version
     bump.
+  - ``producer_metadata["completion"]`` records whether the
+    extraction ran to completion:
+
+      * ``"complete"``        — ``ConversionStatus.SUCCESS``.
+      * ``"partial_timeout"`` — ``PARTIAL_SUCCESS`` with no
+        per-error detail. This is the diagnostic signature of
+        Docling's internal ``document_timeout`` firing: the
+        pipeline abandons layout analysis and serialises whatever
+        state it has, but ``result.errors`` is empty because no
+        per-page failures occurred. The `warnings` field will
+        also be empty in this case; ``completion`` is how a
+        consumer tells this apart from a fully-successful run.
+      * ``"partial_other"``   — ``PARTIAL_SUCCESS`` with populated
+        ``result.errors`` (e.g., per-page load failures). The
+        detail is copied to ``warnings``.
+
+    Consumers reading older cached artifacts that predate this
+    key MUST treat its absence as ``"complete"`` — those
+    artifacts were genuinely successful; they simply don't
+    self-describe the completion state.
 
 Timeout: 300 s per document. Docling on a layout-heavy PDF with
 OCR can take a minute or two; 5 minutes is the "pathological, kill
@@ -196,8 +216,17 @@ class DoclingProducer:
             "docling_schema_version": document.version,
             "conversion_status": result.status.name,
         }
-        if result.status == ConversionStatus.PARTIAL_SUCCESS:
-            metadata["warnings"] = [str(e) for e in (result.errors or [])]
+        if result.status == ConversionStatus.SUCCESS:
+            metadata["completion"] = "complete"
+        elif result.status == ConversionStatus.PARTIAL_SUCCESS:
+            warnings = [str(e) for e in (result.errors or [])]
+            metadata["warnings"] = warnings
+            # Empty errors + PARTIAL_SUCCESS is the signature of
+            # Docling's internal document_timeout. Distinguish it from
+            # per-page failure cases so consumers don't conflate them.
+            metadata["completion"] = (
+                "partial_other" if warnings else "partial_timeout"
+            )
 
         return ProducerResult(
             status="success",
