@@ -1,6 +1,6 @@
 # SPEC.md — technical specification
 
-Version: 0.1.9 (draft)
+Version: 0.1.10 (draft)
 Status: Foundation for Phase 1 (extraction layer with content-addressed
 caching). This spec is the contract. Changes require a separate commit
 with justification.
@@ -742,6 +742,37 @@ explicit `--retry-failed` flag is required to re-attempt.
 Rationale: implicit retry of failures is a debugging nightmare.
 Explicit retry means the user always knows why work is happening.
 
+**Unattempted sources.** A source may have no artifacts if routing
+returned an empty producer list — typically because no available
+producer claims to handle its format. This is distinct from
+extraction failure (`status="failed"`), which records an attempted
+extraction that did not succeed. Unattempted sources are a coverage
+gap, not a failure state.
+
+The catalogue has no explicit column representing unattempted
+status. The canonical query to identify unattempted sources is:
+
+```sql
+SELECT s.source_id, s.current_path
+FROM sources s
+WHERE s.source_id NOT IN (SELECT a.input_hash FROM artifacts a);
+```
+
+A stricter variant, excluding sources whose only artifacts are
+failures, identifies sources with no successful extraction:
+
+```sql
+SELECT s.source_id, s.current_path
+FROM sources s
+WHERE s.source_id NOT IN (
+    SELECT a.input_hash FROM artifacts a WHERE a.status='success'
+);
+```
+
+Making unattempted status a first-class catalogue representation
+(via an explicit marker artifact, a flag on the `sources` table, or
+a separate decisions table) is a Phase 2+ consideration.
+
 ### 14.4 Hash prefixes are unambiguous
 
 All hashes are full SHA-256 hex (64 characters). No truncation
@@ -808,6 +839,21 @@ numbered migration is added in sequence.
 
 ## 15. Change log
 
+- 0.1.10 (draft): §14.3 gains an "Unattempted sources" paragraph
+  naming the coverage-gap case surfaced by the Step 7h 1000-doc
+  stratified run. Routing can legitimately return an empty
+  producer list for sources whose format no producer claims to
+  handle (observed: `.org` files silently skipped by pkm's
+  Pandoc wrapper despite Pandoc supporting `org` natively, and
+  `.xml` files which no producer handles). Such sources have
+  no artifact row — neither `success` nor `failed` — so the
+  catalogue's current schema cannot distinguish "unattempted" from
+  "not yet processed". The addendum documents the distinction,
+  names the canonical `NOT IN` query, and defers first-class
+  representation (marker artifact, sources flag, decisions table)
+  to Phase 2+. Pure documentation; no code or schema change. The
+  concept is named so future sessions don't reinvent it under a
+  different term.
 - 0.1.9 (draft): §7.1 gains an "Uncatchable failure modes" paragraph
   acknowledging that the `Producer.produce()` "never raises"
   guarantee holds only for Python-catchable failures. OS signals
