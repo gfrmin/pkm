@@ -72,6 +72,7 @@ _EXTENSION_MAP: dict[str, str] = {
     ".htm": "html",
     ".docx": "docx",
     ".odt": "odt",
+    ".org": "org",
     ".rst": "rst",
     ".tex": "latex",
     ".rtf": "rtf",
@@ -81,8 +82,10 @@ _EXTENSION_MAP: dict[str, str] = {
 producer behaviour, not configuration: putting it in config would
 allow different users' caches to diverge under the same producer
 ``name`` and ``version``, which is a content-addressing lie.
-Extending the map is a behavioural change and must bump
-``version``."""
+Mutating an existing entry's value is a behavioural change and
+must bump ``version``. Adding a new key is purely additive — no
+pre-existing cache entry was ever written for a previously-
+unhandled extension, so there is nothing to invalidate."""
 
 _TIMEOUT_SECONDS = 60
 """Per-document timeout. Generous — tune down if real-corpus runs
