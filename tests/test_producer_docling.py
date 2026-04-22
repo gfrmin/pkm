@@ -240,6 +240,35 @@ def test_corrupted_pdf_records_failure(
     assert result.error_message  # non-empty
 
 
+def test_encrypted_pdf_returns_specific_failure(
+    producer: DoclingProducer, tmp_path: Path,
+) -> None:
+    """Password-protected PDFs can't be extracted without the key.
+    Docling on such a file returns ConversionStatus.FAILURE with
+    empty result.errors — indistinguishable in the catalogue from
+    corrupted-PDF or Docling-bug cases. The pre-flight encryption
+    check via pikepdf records a categorisable error message
+    instead."""
+    import pikepdf
+
+    src = _FIXTURES / "simple.pdf"
+    encrypted = tmp_path / "encrypted.pdf"
+    with pikepdf.open(src) as pdf:
+        pdf.save(
+            encrypted,
+            encryption=pikepdf.Encryption(
+                user="secret", owner="secret"
+            ),
+        )
+
+    result = producer.produce(encrypted, "a" * 64, {})
+    assert result.status == "failed"
+    assert result.content is None
+    assert result.error_message is not None
+    assert "encrypted" in result.error_message.lower()
+    assert "encrypted.pdf" in result.error_message
+
+
 # --- completion key: full, timeout-partial, other-partial ----------------
 #
 # The ``completion`` key in ``producer_metadata`` distinguishes three

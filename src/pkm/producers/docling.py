@@ -202,6 +202,34 @@ class DoclingProducer:
                 f"supported extensions are {sorted(_SUPPORTED_EXTENSIONS)}"
             )
 
+        # Pre-flight: encrypted PDFs cannot be decrypted by Docling
+        # without the password, and Docling surfaces such cases as a
+        # bare ConversionStatus.FAILURE with empty result.errors —
+        # the same empty-errors signature as the partial_timeout
+        # case above, making the catalogue entry uncategorisable
+        # without opening the file. pikepdf.Pdf.open() raises
+        # PasswordError immediately on an encrypted header without
+        # reading content; cheap enough to run unconditionally on
+        # every PDF. Non-PDF formats (docx, pptx, html, md) are
+        # skipped — encryption is a PDF concern here.
+        if ext == ".pdf":
+            import pikepdf
+
+            try:
+                with pikepdf.open(input_path):
+                    pass
+            except pikepdf.PasswordError:
+                return _failed(
+                    f"PDF is encrypted (no password support) on "
+                    f"{input_path.name}"
+                )
+            except Exception:
+                # Other pikepdf errors (corrupt PDF, truncated,
+                # etc.) fall through to Docling: its pipeline has
+                # richer error messages for non-encryption failure
+                # modes.
+                pass
+
         try:
             converter = self._get_converter()
         except Exception as e:
