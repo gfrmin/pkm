@@ -402,6 +402,18 @@ wheels = [
 ]
 
 [[package]]
+name = "deprecated"
+version = "1.3.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "wrapt" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/49/85/12f0a49a7c4ffb70572b6c2ef13c90c88fd190debda93b23f026b25f9634/deprecated-1.3.1.tar.gz", hash = "sha256:b1b50e0ff0c1fddaa5708a2c6b0a6588bb09b892825ab2b214ac9ea9d92a5223", size = 2932523, upload-time = "2025-10-30T08:19:02.757Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/84/d0/205d54408c08b13550c733c4b85429e7ead111c7f0014309637425520a9a/deprecated-1.3.1-py2.py3-none-any.whl", hash = "sha256:597bfef186b6f60181535a29fbe44865ce137a5079f295b479886c82729d5f3f", size = 11298, upload-time = "2025-10-30T08:19:00.758Z" },
+]
+
+[[package]]
 name = "dill"
 version = "0.4.1"
 source = { registry = "https://pypi.org/simple" }
@@ -1348,6 +1360,27 @@ wheels = [
 ]
 
 [[package]]
+name = "pikepdf"
+version = "10.5.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "deprecated" },
+    { name = "lxml" },
+    { name = "packaging" },
+    { name = "pillow" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/2c/66/32a45480d84cb239c7ad31209c956496fe5b20f6fb163d794db4c79f840c/pikepdf-10.5.1.tar.gz", hash = "sha256:ffa6c7d0b77deb3af9735e0b0cae177c897431e10d342bb171b62e5527a622b7", size = 4582470, upload-time = "2026-03-18T07:56:00.036Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/7f/d4/eb00bb96b383a1dd3151d347a6339408af642d75ed998f8ac7368ddf5bcd/pikepdf-10.5.1-cp313-cp313-macosx_14_0_arm64.whl", hash = "sha256:0b30d192baf0132e6d945e8b2200288bd32f2b0ec2357b1fe414ef595531b181", size = 4772545, upload-time = "2026-03-18T07:55:33.251Z" },
+    { url = "https://files.pythonhosted.org/packages/42/6f/f25b9e66afd647cd090d0e62a5287135ec0ae4971b2f1601a1e3dad96fa9/pikepdf-10.5.1-cp313-cp313-macosx_15_0_x86_64.whl", hash = "sha256:d59a710ba6fc5a5220ac59dba4bd43612663a2fde33973a616843bc79eaf0fac", size = 5088950, upload-time = "2026-03-18T07:55:35.222Z" },
+    { url = "https://files.pythonhosted.org/packages/69/9e/f2781afe47f149f88b1c2a3e72a0f2501fcc104c23bffb2e68c89ec81ea7/pikepdf-10.5.1-cp313-cp313-manylinux_2_26_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:5f245df7aeb1a69c166e923ceae9bf47c895a06286dcb94a92225f1b10156e6f", size = 2490804, upload-time = "2026-03-18T07:55:37.247Z" },
+    { url = "https://files.pythonhosted.org/packages/9a/77/f87710f01d74dfe8d3713cfe682b350c77aa7a5443552fffceb7b3b40543/pikepdf-10.5.1-cp313-cp313-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:7e1cdfdeec93a6eca49e6ce592269fd78007d13440719d6f95f3a5a33e609d9f", size = 2734878, upload-time = "2026-03-18T07:55:39.061Z" },
+    { url = "https://files.pythonhosted.org/packages/7b/b1/b350dc5cf82de45c0c1c79fd01384b0af07e3ba82da77e276bc98ca00489/pikepdf-10.5.1-cp313-cp313-musllinux_1_2_aarch64.whl", hash = "sha256:b21b093335069d79eecf8639b150e6100043b1275ffdeb00501640d2bcbdf760", size = 3699375, upload-time = "2026-03-18T07:55:40.984Z" },
+    { url = "https://files.pythonhosted.org/packages/2c/5e/f7c7473c36687d453bede6afb0a4d8fb0ebb2e846f35219db12542889df1/pikepdf-10.5.1-cp313-cp313-musllinux_1_2_x86_64.whl", hash = "sha256:89cc87b440f663f1e4f51670930f0aa310cec30cc02d9a1c36a61432be9380fd", size = 3908458, upload-time = "2026-03-18T07:55:43.051Z" },
+    { url = "https://files.pythonhosted.org/packages/38/4a/b2949669f3eaae08cc32d21b13f505ebbcabb0d7dd8808fdf743a9eb69ae/pikepdf-10.5.1-cp313-cp313-win_amd64.whl", hash = "sha256:d10f915c80881be4802204a54ba3ce5ee9e13dd59aa6fbe4cb95230039defa86", size = 3812315, upload-time = "2026-03-18T07:55:44.829Z" },
+]
+
+[[package]]
 name = "pillow"
 version = "12.2.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1388,6 +1421,7 @@ dependencies = [
     { name = "docling" },
     { name = "duckdb" },
     { name = "msoffcrypto-tool" },
+    { name = "pikepdf" },
     { name = "pypandoc" },
     { name = "pyyaml" },
     { name = "unstructured" },
@@ -1408,6 +1442,7 @@ requires-dist = [
     { name = "docling", specifier = ">=2.14" },
     { name = "duckdb", specifier = ">=1.0" },
     { name = "msoffcrypto-tool", specifier = ">=6.0.0" },
+    { name = "pikepdf", specifier = ">=10.5.1" },
     { name = "pypandoc", specifier = ">=1.13" },
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "unstructured", specifier = ">=0.16" },

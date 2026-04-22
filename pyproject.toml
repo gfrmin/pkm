@@ -19,6 +19,11 @@ dependencies = [
     "unstructured>=0.16",
     "msoffcrypto-tool>=6.0.0",
     "xlrd>=2.0.2",
+    # Docling pre-flight: pikepdf detects encrypted PDFs (cheap
+    # header parse) so the producer can return a specific error
+    # rather than Docling's uninformative status=FAILURE. Added
+    # 2026-04-22 after the 1000-doc run's WTW-salaries PDF cluster.
+    "pikepdf>=10.5.1",
 ]
 
 [project.scripts]
