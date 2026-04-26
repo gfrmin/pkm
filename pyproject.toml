@@ -24,6 +24,8 @@ dependencies = [
     # rather than Docling's uninformative status=FAILURE. Added
     # 2026-04-22 after the 1000-doc run's WTW-salaries PDF cluster.
     "pikepdf>=10.5.1",
+    # Transform output validation (SPEC v0.2.0 §20.2).
+    "jsonschema>=4.23",
 ]
 
 [project.scripts]
@@ -36,6 +38,7 @@ dev = [
     "mypy>=1.11",
     "ruff>=0.6",
     "types-PyYAML>=6.0",
+    "types-jsonschema>=4.26.0.20260408",
 ]
 
 [build-system]
