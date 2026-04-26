@@ -27,6 +27,7 @@ from pathlib import Path
 import pytest
 
 from pkm.cache import (
+    LINEAGE_FORMAT_VERSION,
     META_FORMAT_VERSION,
     CacheInconsistencyError,
     CacheWriteOutcome,
@@ -34,6 +35,8 @@ from pkm.cache import (
     artifact_dir,
     content_file,
     content_path_rel,
+    delete_artifact,
+    lineage_file,
     meta_file,
     read_artifact,
     sweep_orphans,
@@ -389,3 +392,163 @@ def test_hash_config_is_order_insensitive() -> None:
     a = {"ocr": True, "lang": "eng"}
     b = {"lang": "eng", "ocr": True}
     assert _hash_config(a) == _hash_config(b)
+
+
+# --- Transform artifacts (lineage + cache_key_schema_version) ---------------
+
+
+_MODEL_IDENTITY = {"provider": "anthropic", "model": "claude-3-haiku", "version": "1"}
+_PROMPT_HASH = "b" * 64
+
+
+def _write_transform(
+    root: Path,
+    *,
+    input_hash: str = "a" * 64,
+    lineage: list[dict[str, str]] | None = None,
+    result: ProducerResult | None = None,
+) -> tuple[str, CacheWriteOutcome]:
+    if lineage is None:
+        lineage = [{"cache_key": "c" * 64, "role": "primary"}]
+    result = result if result is not None else _success()
+    cache_key = compute_cache_key(
+        input_hash=input_hash,
+        producer_name="entity_extraction",
+        producer_version="0.1.0",
+        producer_config={},
+        schema_version=2,
+        model_identity=_MODEL_IDENTITY,
+        prompt_hash=_PROMPT_HASH,
+    )
+    with open_catalogue(root) as conn:
+        outcome = write_artifact(
+            root, conn,
+            cache_key=cache_key, input_hash=input_hash,
+            producer_name="entity_extraction", producer_version="0.1.0",
+            producer_config={},
+            result=result,
+            lineage=lineage,
+            cache_key_schema_version=2,
+        )
+    return cache_key, outcome
+
+
+def test_transform_write_produces_lineage_json(migrated_root: Path) -> None:
+    cache_key, outcome = _write_transform(migrated_root)
+    assert outcome.wrote is True
+
+    lf = lineage_file(migrated_root, cache_key)
+    assert lf.exists()
+    lineage = json.loads(lf.read_text(encoding="utf-8"))
+    assert lineage["format_version"] == LINEAGE_FORMAT_VERSION
+    assert len(lineage["inputs"]) == 1
+    assert lineage["inputs"][0]["cache_key"] == "c" * 64
+    assert lineage["inputs"][0]["role"] == "primary"
+
+
+def test_transform_meta_includes_cache_key_schema_version(
+    migrated_root: Path,
+) -> None:
+    cache_key, _ = _write_transform(migrated_root)
+    meta = json.loads(meta_file(migrated_root, cache_key).read_text(encoding="utf-8"))
+    assert meta["cache_key_schema_version"] == 2
+
+
+def test_extractor_meta_omits_cache_key_schema_version(
+    migrated_root: Path,
+) -> None:
+    cache_key, _ = _write(migrated_root)
+    meta = json.loads(meta_file(migrated_root, cache_key).read_text(encoding="utf-8"))
+    assert "cache_key_schema_version" not in meta
+
+
+def test_transform_lineage_rows_in_catalogue(migrated_root: Path) -> None:
+    lineage = [
+        {"cache_key": "c" * 64, "role": "primary"},
+        {"cache_key": "d" * 64, "role": "context"},
+    ]
+    cache_key, _ = _write_transform(migrated_root, lineage=lineage)
+
+    with open_catalogue(migrated_root) as conn:
+        rows = conn.execute(
+            "SELECT input_cache_key, role FROM artifact_lineage "
+            "WHERE artifact_cache_key = ? ORDER BY input_cache_key",
+            [cache_key],
+        ).fetchall()
+    assert rows == [("c" * 64, "primary"), ("d" * 64, "context")]
+
+
+def test_transform_write_is_idempotent(migrated_root: Path) -> None:
+    _cache_key, first = _write_transform(migrated_root)
+    _, second = _write_transform(migrated_root)
+    assert first.wrote is True
+    assert second.wrote is False
+
+    with open_catalogue(migrated_root) as conn:
+        n = conn.execute("SELECT COUNT(*) FROM artifacts").fetchone()
+        lineage_n = conn.execute("SELECT COUNT(*) FROM artifact_lineage").fetchone()
+    assert n == (1,)
+    assert lineage_n == (1,)
+
+
+def test_transform_requires_lineage(migrated_root: Path) -> None:
+    cache_key = compute_cache_key(
+        input_hash="a" * 64,
+        producer_name="entity_extraction",
+        producer_version="0.1.0",
+        producer_config={},
+        schema_version=2,
+        model_identity=_MODEL_IDENTITY,
+        prompt_hash=_PROMPT_HASH,
+    )
+    with open_catalogue(migrated_root) as conn, pytest.raises(
+        ValueError, match=r"requires lineage"
+    ):
+        write_artifact(
+            migrated_root, conn,
+            cache_key=cache_key, input_hash="a" * 64,
+            producer_name="entity_extraction", producer_version="0.1.0",
+            producer_config={}, result=_success(),
+            lineage=None, cache_key_schema_version=2,
+        )
+
+
+def test_require_files_detects_missing_lineage_for_transform(
+    migrated_root: Path,
+) -> None:
+    cache_key, _ = _write_transform(migrated_root)
+    lineage_file(migrated_root, cache_key).unlink()
+
+    with pytest.raises(CacheInconsistencyError, match=r"lineage\.json"):
+        _write_transform(migrated_root)
+
+
+def test_delete_artifact_removes_lineage_rows(migrated_root: Path) -> None:
+    cache_key, _ = _write_transform(migrated_root)
+
+    with open_catalogue(migrated_root) as conn:
+        deleted = delete_artifact(migrated_root, conn, cache_key)
+    assert deleted is True
+
+    with open_catalogue(migrated_root) as conn:
+        n = conn.execute(
+            "SELECT COUNT(*) FROM artifact_lineage "
+            "WHERE artifact_cache_key = ?", [cache_key],
+        ).fetchone()
+    assert n == (0,)
+
+
+def test_sweep_removes_orphan_with_lineage(migrated_root: Path) -> None:
+    """An orphan directory with content + lineage.json + meta.json
+    (no catalogue row) is swept."""
+    cache_key = "5" * 64
+    d = artifact_dir(migrated_root, cache_key)
+    d.mkdir(parents=True)
+    (d / "content").write_bytes(b"data")
+    (d / "lineage.json").write_text("{}", encoding="utf-8")
+    (d / "meta.json").write_text("{}", encoding="utf-8")
+
+    with open_catalogue(migrated_root) as conn:
+        removed = sweep_orphans(migrated_root, conn)
+    assert cache_key in removed
+    assert not d.exists()

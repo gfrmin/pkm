@@ -149,6 +149,10 @@ def meta_file(root: Path, cache_key: str) -> Path:
     return artifact_dir(root, cache_key) / "meta.json"
 
 
+def lineage_file(root: Path, cache_key: str) -> Path:
+    return artifact_dir(root, cache_key) / "lineage.json"
+
+
 def _validate_cache_key(cache_key: str) -> None:
     if not _CACHE_KEY_RE.match(cache_key):
         raise ValueError(
@@ -158,6 +162,10 @@ def _validate_cache_key(cache_key: str) -> None:
 
 
 # --- Write ----------------------------------------------------------------
+
+
+LINEAGE_FORMAT_VERSION: int = 1
+"""Version for lineage.json (SPEC v0.2.0 §18.3)."""
 
 
 def write_artifact(
@@ -170,20 +178,18 @@ def write_artifact(
     producer_version: str,
     producer_config: Mapping[str, Any],
     result: ProducerResult,
+    lineage: list[dict[str, str]] | None = None,
+    cache_key_schema_version: int = 1,
 ) -> CacheWriteOutcome:
     """Atomically write an artifact and its catalogue row.
 
-    Idempotent: if the cache key already has a row AND both files
-    are on disk, returns immediately with ``wrote=False``. If the
-    row exists but files are missing, raises
+    Idempotent: if the cache key already has a row AND all expected
+    files are on disk, returns immediately with ``wrote=False``. If
+    the row exists but files are missing, raises
     ``CacheInconsistencyError`` (§6.2 asymmetric recovery).
 
-    Write order (§6.2):
-        content → meta.json → BEGIN; INSERT artifacts; COMMIT.
-
-    The caller is responsible for computing ``cache_key`` via
-    ``compute_cache_key``; this function does not re-verify it to
-    avoid duplicating the work.
+    Write order (§6.2, extended by v0.2.0 §18.4):
+        content → lineage.json → meta.json → BEGIN; INSERT; COMMIT.
 
     Args:
         root: Knowledge root directory.
@@ -191,10 +197,14 @@ def write_artifact(
         cache_key: Precomputed 64-hex cache key.
         input_hash: 64-hex SHA-256 of the input content.
         producer_name, producer_version: Producer identity.
-        producer_config: Producer parameters. Written verbatim into
-            meta.json; its canonical-JSON hash is stored in both
-            meta.json and ``artifacts.producer_config_hash``.
+        producer_config: Producer parameters.
         result: The producer's outcome.
+        lineage: For transform artifacts, a list of
+            ``{"cache_key": ..., "role": ...}`` dicts recording
+            which input artifacts contributed. Required for
+            ``cache_key_schema_version >= 2``.
+        cache_key_schema_version: 1 for v0.1.x extractors (default),
+            2 for v0.2.0 transforms.
 
     Returns:
         CacheWriteOutcome with ``wrote=True`` on first write,
@@ -203,10 +213,15 @@ def write_artifact(
     Raises:
         CacheInconsistencyError: catalogue row exists but cache
             files are missing.
-        ValueError: malformed ``cache_key``, or a "success" result
-            with ``content is None``.
+        ValueError: malformed ``cache_key``, or mismatched
+            ``lineage`` / ``cache_key_schema_version``.
     """
     _validate_cache_key(cache_key)
+
+    if cache_key_schema_version >= 2 and lineage is None:
+        raise ValueError(
+            "cache_key_schema_version >= 2 (transform) requires lineage"
+        )
 
     # Idempotency / asymmetric-recovery guard.
     if _row_exists(conn, cache_key):
@@ -235,7 +250,19 @@ def write_artifact(
     if content_bytes is not None:
         (adir / "content").write_bytes(content_bytes)
 
-    # Stage 2: meta.json.
+    # Stage 2: lineage.json (transform artifacts only, §18.4).
+    if lineage is not None:
+        lineage_obj = {
+            "format_version": LINEAGE_FORMAT_VERSION,
+            "inputs": lineage,
+        }
+        (adir / "lineage.json").write_text(
+            json.dumps(lineage_obj, indent=2, sort_keys=True,
+                       ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+    # Stage 3: meta.json.
     meta_obj: dict[str, Any] = {
         "format_version": META_FORMAT_VERSION,
         "cache_key": cache_key,
@@ -252,12 +279,14 @@ def write_artifact(
         "content_encoding": result.content_encoding,
         "producer_metadata": dict(result.producer_metadata),
     }
+    if cache_key_schema_version >= 2:
+        meta_obj["cache_key_schema_version"] = cache_key_schema_version
     (adir / "meta.json").write_text(
         json.dumps(meta_obj, indent=2, sort_keys=True, ensure_ascii=False),
         encoding="utf-8",
     )
 
-    # Stage 3: catalogue row in its own transaction.
+    # Stage 4: catalogue rows in one transaction.
     conn.execute("BEGIN TRANSACTION")
     try:
         conn.execute(
@@ -281,6 +310,14 @@ def write_artifact(
                 content_path_rel(cache_key),
             ],
         )
+        if lineage is not None:
+            for entry in lineage:
+                conn.execute(
+                    "INSERT INTO artifact_lineage "
+                    "(artifact_cache_key, input_cache_key, role) "
+                    "VALUES (?, ?, ?)",
+                    [cache_key, entry["cache_key"], entry["role"]],
+                )
         conn.execute("COMMIT")
     except Exception:
         conn.execute("ROLLBACK")
@@ -390,6 +427,14 @@ def delete_artifact(
     if adir.exists():
         shutil.rmtree(adir)
 
+    # DuckDB FK checks are statement-level within a transaction, so
+    # deleting lineage rows and the artifact row in the same
+    # transaction fails.  Delete lineage first (derived index,
+    # rebuildable), then the artifact row.
+    conn.execute(
+        "DELETE FROM artifact_lineage WHERE artifact_cache_key = ?",
+        [cache_key],
+    )
     conn.execute("BEGIN TRANSACTION")
     try:
         conn.execute(
@@ -515,25 +560,21 @@ def _fetch_artifacts_row(
 
 
 def _require_files_present(root: Path, cache_key: str) -> None:
-    """Raise ``CacheInconsistencyError`` if ``content`` or ``meta.json``
-    is missing for ``cache_key`` (SPEC §6.2 asymmetric recovery).
+    """Raise ``CacheInconsistencyError`` if expected files are missing
+    for ``cache_key`` (SPEC §6.2 asymmetric recovery).
 
-    Success vs failed artifacts differ in whether ``content`` is
-    required, so this helper distinguishes by reading status from
-    meta.json when it exists. If meta.json is itself missing, both
-    files are treated as missing.
+    Expected files depend on artifact type:
+      - v0.1.x extractors: ``content`` (success only) + ``meta.json``
+      - v0.2.0 transforms (``cache_key_schema_version >= 2``):
+        ``content`` (success only) + ``lineage.json`` + ``meta.json``
     """
     adir = artifact_dir(root, cache_key)
     meta_missing = not (adir / "meta.json").exists()
 
     if meta_missing:
-        # Without meta.json we cannot tell success vs failed; treat
-        # content as also required for reporting purposes.
         content_missing = not (adir / "content").exists()
         _raise_inconsistency(adir, cache_key, content_missing, True)
 
-    # meta.json present — read status to decide whether content is
-    # required.
     meta = json.loads((adir / "meta.json").read_text(encoding="utf-8"))
     content_missing = (
         meta.get("status") == "success"
@@ -541,6 +582,12 @@ def _require_files_present(root: Path, cache_key: str) -> None:
     )
     if content_missing:
         _raise_inconsistency(adir, cache_key, True, False)
+
+    if (
+        meta.get("cache_key_schema_version", 1) >= 2
+        and not (adir / "lineage.json").exists()
+    ):
+        _raise_inconsistency_lineage(adir, cache_key)
 
 
 def _raise_inconsistency(
@@ -570,4 +617,23 @@ def _raise_inconsistency(
         f"{', '.join(missing)} {'is' if len(missing) == 1 else 'are'} "
         f"missing on disk at {adir}. run `pkm rebuild-catalogue` to "
         f"reconcile."
+    )
+
+
+def _raise_inconsistency_lineage(adir: Path, cache_key: str) -> None:
+    logger.error(
+        "cache inconsistency at %s: transform artifact missing lineage.json",
+        cache_key[:12],
+        extra={
+            "event": "cache_inconsistency",
+            "cache_key": cache_key,
+            "missing": ["lineage.json"],
+            "artifact_dir": str(adir),
+        },
+    )
+    raise CacheInconsistencyError(
+        f"catalogue has a row for cache_key {cache_key} and meta.json "
+        f"indicates cache_key_schema_version >= 2 (transform) but "
+        f"lineage.json is missing on disk at {adir}. run "
+        f"`pkm rebuild-catalogue` to reconcile."
     )

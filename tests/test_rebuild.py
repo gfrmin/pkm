@@ -63,6 +63,7 @@ def _write_artifact(
 
 def _drop_artifacts(root: Path) -> None:
     with open_catalogue(root) as conn:
+        conn.execute("DELETE FROM artifact_lineage")
         conn.execute("DELETE FROM artifacts")
 
 
@@ -190,5 +191,105 @@ def test_rebuild_on_empty_cache(migrated_root: Path) -> None:
     result = rebuild_artifacts(migrated_root)
     assert result.scanned == 0
     assert result.inserted == 0
+    assert result.lineage_inserted == 0
     assert result.skipped == []
     assert result.swept == []
+
+
+# --- Transform artifact rebuild (lineage) ----------------------------------
+
+_MODEL_IDENTITY = {"provider": "anthropic", "model": "claude-3-haiku", "version": "1"}
+_PROMPT_HASH = "b" * 64
+
+
+def _write_transform_artifact(
+    root: Path,
+    *,
+    lineage: list[dict[str, str]] | None = None,
+) -> str:
+    if lineage is None:
+        lineage = [{"cache_key": "c" * 64, "role": "primary"}]
+    cache_key = compute_cache_key(
+        input_hash="a" * 64,
+        producer_name="entity_extraction",
+        producer_version="0.1.0",
+        producer_config={},
+        schema_version=2,
+        model_identity=_MODEL_IDENTITY,
+        prompt_hash=_PROMPT_HASH,
+    )
+    with open_catalogue(root) as conn:
+        write_artifact(
+            root, conn,
+            cache_key=cache_key, input_hash="a" * 64,
+            producer_name="entity_extraction", producer_version="0.1.0",
+            producer_config={}, result=_success(),
+            lineage=lineage,
+            cache_key_schema_version=2,
+        )
+    return cache_key
+
+
+def test_rebuild_reconstructs_lineage(migrated_root: Path) -> None:
+    lineage = [
+        {"cache_key": "c" * 64, "role": "primary"},
+        {"cache_key": "d" * 64, "role": "context"},
+    ]
+    ck = _write_transform_artifact(migrated_root, lineage=lineage)
+    _drop_artifacts(migrated_root)
+    with open_catalogue(migrated_root) as conn:
+        conn.execute("DELETE FROM artifact_lineage")
+
+    result = rebuild_artifacts(migrated_root)
+    assert result.inserted == 1
+    assert result.lineage_inserted == 2
+
+    with open_catalogue(migrated_root) as conn:
+        rows = conn.execute(
+            "SELECT input_cache_key, role FROM artifact_lineage "
+            "WHERE artifact_cache_key = ? ORDER BY input_cache_key",
+            [ck],
+        ).fetchall()
+    assert rows == [("c" * 64, "primary"), ("d" * 64, "context")]
+
+
+def test_rebuild_with_extractor_has_zero_lineage(migrated_root: Path) -> None:
+    _write_artifact(migrated_root)
+    _drop_artifacts(migrated_root)
+
+    result = rebuild_artifacts(migrated_root)
+    assert result.inserted == 1
+    assert result.lineage_inserted == 0
+
+
+def test_rebuild_corruption_model_identity_without_schema_version(
+    migrated_root: Path,
+) -> None:
+    """meta.json with model_identity in producer_metadata but no
+    cache_key_schema_version is a corruption signal — rebuild must
+    skip and report it."""
+    ck = _write_artifact(migrated_root)
+    meta_path = meta_file(migrated_root, ck)
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    meta["producer_metadata"]["model_identity"] = {"provider": "test"}
+    meta_path.write_text(json.dumps(meta), encoding="utf-8")
+    _drop_artifacts(migrated_root)
+
+    result = rebuild_artifacts(migrated_root)
+    assert result.inserted == 0
+    assert ck in result.skipped
+
+
+def test_rebuild_corruption_prompt_hash_without_schema_version(
+    migrated_root: Path,
+) -> None:
+    ck = _write_artifact(migrated_root)
+    meta_path = meta_file(migrated_root, ck)
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    meta["producer_metadata"]["prompt_hash"] = "x" * 64
+    meta_path.write_text(json.dumps(meta), encoding="utf-8")
+    _drop_artifacts(migrated_root)
+
+    result = rebuild_artifacts(migrated_root)
+    assert result.inserted == 0
+    assert ck in result.skipped

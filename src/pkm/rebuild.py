@@ -53,6 +53,14 @@ _BB_PATTERN = re.compile(r"^[0-9a-f]{62}$")
 _EXPECTED_META_FORMAT_VERSION = 1
 
 
+class LineageCorruptionError(Exception):
+    """meta.json has transform-specific fields (``model_identity`` or
+    ``prompt_hash`` in ``producer_metadata``) but no
+    ``cache_key_schema_version``. This is a corruption signal — the
+    two must always appear together (SPEC v0.2.0 §17.1).
+    """
+
+
 @dataclass(frozen=True)
 class RebuildResult:
     """Outcome of a ``rebuild_artifacts`` call.
@@ -62,6 +70,7 @@ class RebuildResult:
             attempted (successfully or not).
         inserted: Rows written to the ``artifacts`` table. Zero if
             ``dry_run=True`` even when ``scanned > 0``.
+        lineage_inserted: Rows written to ``artifact_lineage``.
         skipped: Cache keys whose ``meta.json`` was unreadable,
             malformed, format-incompatible, or whose recorded
             ``cache_key`` did not match the directory.
@@ -71,6 +80,7 @@ class RebuildResult:
 
     scanned: int
     inserted: int
+    lineage_inserted: int = 0
     skipped: list[str] = field(default_factory=list)
     swept: list[str] = field(default_factory=list)
 
@@ -97,20 +107,26 @@ def rebuild_artifacts(
     """
     scanned = 0
     rows: list[tuple[Any, ...]] = []
+    lineage_rows: list[tuple[str, str, str]] = []
     skipped: list[str] = []
 
     for cache_key, meta_path in _iter_meta_files(root):
         scanned += 1
         try:
             meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            _check_meta_consistency(cache_key, meta)
             row = _meta_to_row(cache_key, meta)
             rows.append(row)
+            lineage_rows.extend(
+                _read_lineage(cache_key, meta_path.parent)
+            )
         except (
             OSError,
             json.JSONDecodeError,
             KeyError,
             ValueError,
             TypeError,
+            LineageCorruptionError,
         ) as e:
             logger.warning(
                 "skipped cache entry %s during rebuild (%s: %s)",
@@ -141,11 +157,16 @@ def rebuild_artifacts(
         return RebuildResult(
             scanned=scanned,
             inserted=0,
+            lineage_inserted=0,
             skipped=skipped,
             swept=[],
         )
 
     with open_catalogue(root) as conn:
+        # DuckDB FK checks are statement-level within a transaction,
+        # so clear the child table before beginning the main rebuild
+        # transaction.  artifact_lineage is a derived index anyway.
+        conn.execute("DELETE FROM artifact_lineage")
         conn.execute("BEGIN TRANSACTION")
         try:
             conn.execute("DELETE FROM artifacts")
@@ -159,6 +180,13 @@ def rebuild_artifacts(
                     "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     list(row),
                 )
+            for lr in lineage_rows:
+                conn.execute(
+                    "INSERT INTO artifact_lineage "
+                    "(artifact_cache_key, input_cache_key, role) "
+                    "VALUES (?, ?, ?)",
+                    list(lr),
+                )
             conn.execute("COMMIT")
         except Exception:
             conn.execute("ROLLBACK")
@@ -167,15 +195,18 @@ def rebuild_artifacts(
         swept = sweep_orphans(root, conn)
 
     logger.info(
-        "rebuild complete: scanned %d, inserted %d, skipped %d, swept %d",
+        "rebuild complete: scanned %d, inserted %d, lineage %d, "
+        "skipped %d, swept %d",
         scanned,
         len(rows),
+        len(lineage_rows),
         len(skipped),
         len(swept),
         extra={
             "event": "rebuild_complete",
             "scanned": scanned,
             "inserted": len(rows),
+            "lineage_inserted": len(lineage_rows),
             "skipped": len(skipped),
             "swept": len(swept),
         },
@@ -184,6 +215,7 @@ def rebuild_artifacts(
     return RebuildResult(
         scanned=scanned,
         inserted=len(rows),
+        lineage_inserted=len(lineage_rows),
         skipped=skipped,
         swept=swept,
     )
@@ -246,3 +278,41 @@ def _meta_to_row(cache_key: str, meta: dict[str, Any]) -> tuple[Any, ...]:
         meta.get("content_encoding"),
         content_path_rel(cache_key),
     )
+
+
+def _check_meta_consistency(cache_key: str, meta: dict[str, Any]) -> None:
+    """Detect corruption: transform-specific fields without schema version.
+
+    If ``producer_metadata`` contains ``model_identity`` or
+    ``prompt_hash`` but the top-level ``cache_key_schema_version`` is
+    absent, the meta.json is internally inconsistent — the two must
+    always appear together.
+    """
+    pm = meta.get("producer_metadata", {})
+    has_transform_fields = (
+        "model_identity" in pm or "prompt_hash" in pm
+    )
+    has_schema_version = "cache_key_schema_version" in meta
+    if has_transform_fields and not has_schema_version:
+        raise LineageCorruptionError(
+            f"meta.json for {cache_key} has model_identity or prompt_hash "
+            f"in producer_metadata but no cache_key_schema_version field — "
+            f"this is a corruption signal"
+        )
+
+
+def _read_lineage(
+    cache_key: str, artifact_directory: Path,
+) -> list[tuple[str, str, str]]:
+    """Read ``lineage.json`` from a cache directory and return rows
+    for the ``artifact_lineage`` table. Returns an empty list if
+    no lineage.json exists (v0.1.x extractor artifacts).
+    """
+    lineage_path = artifact_directory / "lineage.json"
+    if not lineage_path.is_file():
+        return []
+    lineage = json.loads(lineage_path.read_text(encoding="utf-8"))
+    return [
+        (cache_key, entry["cache_key"], entry["role"])
+        for entry in lineage.get("inputs", [])
+    ]
