@@ -30,7 +30,9 @@ def test_top_level_help_lists_every_subcommand(
         main(["--help"])
     assert excinfo.value.code == 0
     out = capsys.readouterr().out
-    for name in ("migrate", "rebuild-catalogue", "ingest", "extract"):
+    for name in (
+        "migrate", "rebuild-catalogue", "ingest", "extract", "transform",
+    ):
         assert name in out
 
 
@@ -47,6 +49,7 @@ def test_top_level_help_has_distinct_descriptions(
     assert "Rebuild the artifacts table" in out
     assert "Register sources" in out
     assert "Run extractors" in out
+    assert "LLM transforms" in out
 
 
 def test_migrate_help_describes_idempotency(
@@ -238,3 +241,67 @@ def test_missing_config_exits_two(
     assert rc == 2
     err = capsys.readouterr().err
     assert "config error" in err.lower()
+
+
+# --- transform subcommands -----------------------------------------------
+
+
+def test_transform_no_subcommand_prints_usage(
+    tmp_root: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+) -> None:
+    cfg = _make_config(tmp_root, tmp_path / "config.yaml")
+    main(["--config", str(cfg), "migrate"])
+    capsys.readouterr()
+    rc = main(["--config", str(cfg), "transform"])
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "usage" in err.lower() or "transform" in err.lower()
+
+
+def test_transform_list_empty(
+    tmp_root: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+) -> None:
+    cfg = _make_config(tmp_root, tmp_path / "config.yaml")
+    main(["--config", str(cfg), "migrate"])
+    capsys.readouterr()
+    rc = main(["--config", str(cfg), "transform", "list"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "no transform" in out.lower()
+
+
+def test_transform_status_no_pending(
+    tmp_root: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+) -> None:
+    cfg = _make_config(tmp_root, tmp_path / "config.yaml")
+    main(["--config", str(cfg), "migrate"])
+    capsys.readouterr()
+    rc = main(["--config", str(cfg), "transform", "status"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "no pending" in out.lower()
+
+
+def test_transform_show_not_found(
+    tmp_root: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+) -> None:
+    cfg = _make_config(tmp_root, tmp_path / "config.yaml")
+    main(["--config", str(cfg), "migrate"])
+    capsys.readouterr()
+    rc = main([
+        "--config", str(cfg), "transform", "show", "0" * 64,
+    ])
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "not found" in err.lower()
+
+
+def test_transform_help_lists_subcommands(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(SystemExit) as excinfo:
+        main(["transform", "--help"])
+    assert excinfo.value.code == 0
+    out = capsys.readouterr().out
+    for name in ("list", "run", "approve", "reject", "status", "show"):
+        assert name in out

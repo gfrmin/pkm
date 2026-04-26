@@ -1,6 +1,6 @@
 """Command-line interface for pkm.
 
-Phase 1 surface:
+Phase 1 + Phase 2 (Stage A) surface:
 
     pkm                          # prints help to stderr, exits 1
     pkm --help                   # argparse help, exits 0
@@ -10,6 +10,13 @@ Phase 1 surface:
     pkm rebuild-catalogue [--dry-run]
     pkm ingest
     pkm extract [--retry-failed] [--source HASH] [--producer NAME]
+
+    pkm transform list
+    pkm transform run <name>
+    pkm transform approve <approval_id>
+    pkm transform reject <approval_id> --reason "..."
+    pkm transform status [<name>]
+    pkm transform show <cache_key>
 
 Design notes:
 
@@ -42,7 +49,9 @@ from collections.abc import Callable
 from importlib.metadata import version as _package_version
 from pathlib import Path
 
-from pkm.catalogue import run_migrations
+from pkm.approval import approve, list_pending, reject
+from pkm.cache import lineage_file, meta_file, read_artifact
+from pkm.catalogue import open_catalogue, run_migrations
 from pkm.config import Config, ConfigError, load_config
 from pkm.extract import extract
 from pkm.ingest import ingest_sources
@@ -224,6 +233,59 @@ def _build_parser() -> argparse.ArgumentParser:
         help="restrict to the named producer",
     )
 
+    p_transform = subparsers.add_parser(
+        "transform",
+        help="Run and manage LLM transforms.",
+        description=(
+            "Phase 2 transform commands (SPEC v0.2.0 S20-S24). "
+            "Run `pkm transform <subcommand> --help` for details."
+        ),
+    )
+    t_sub = p_transform.add_subparsers(
+        dest="transform_subcommand",
+        metavar="<subcommand>",
+    )
+
+    t_sub.add_parser(
+        "list",
+        help="List available transform declarations.",
+    )
+
+    p_t_run = t_sub.add_parser(
+        "run",
+        help="Execute a transform over eligible sources.",
+    )
+    p_t_run.add_argument("name", help="transform declaration name")
+
+    p_t_approve = t_sub.add_parser(
+        "approve",
+        help="Approve a pending transform run.",
+    )
+    p_t_approve.add_argument("approval_id", help="approval UUID")
+
+    p_t_reject = t_sub.add_parser(
+        "reject",
+        help="Reject a pending transform run.",
+    )
+    p_t_reject.add_argument("approval_id", help="approval UUID")
+    p_t_reject.add_argument(
+        "--reason", required=True, help="rejection reason",
+    )
+
+    p_t_status = t_sub.add_parser(
+        "status",
+        help="Show transform status and pending approvals.",
+    )
+    p_t_status.add_argument(
+        "name", nargs="?", help="optional transform name filter",
+    )
+
+    p_t_show = t_sub.add_parser(
+        "show",
+        help="Display a transform artifact with lineage.",
+    )
+    p_t_show.add_argument("cache_key", help="64-hex cache key")
+
     return parser
 
 
@@ -312,6 +374,137 @@ def _cmd_extract(args: argparse.Namespace, config: Config) -> int:
     return 0
 
 
+def _cmd_transform(args: argparse.Namespace, config: Config) -> int:
+    sub = args.transform_subcommand
+    if sub is None:
+        print("usage: pkm transform <subcommand>", file=sys.stderr)
+        return 1
+    handler = _TRANSFORM_SUBCOMMANDS[sub]
+    return handler(args, config)
+
+
+def _cmd_transform_list(
+    args: argparse.Namespace, config: Config,
+) -> int:
+    t_dir = config.root_dir / "transforms"
+    if not t_dir.exists():
+        print("no transforms directory")
+        return 0
+    decls = sorted(t_dir.glob("*.yaml"))
+    if not decls:
+        print("no transform declarations found")
+        return 0
+    for p in decls:
+        print(p.stem)
+    return 0
+
+
+def _cmd_transform_run(
+    args: argparse.Namespace, config: Config,
+) -> int:
+    from pkm.transform_declaration import load_transform_declaration
+
+    decl = load_transform_declaration(config.root_dir, args.name)
+    print(
+        f"transform run: {decl.name} v{decl.version} "
+        f"(declaration hash {decl.declaration_hash[:12]}…)"
+    )
+    print(f"  prompt: {decl.prompt_name} (hash {decl.prompt_hash[:12]}…)")
+    print(f"  model: {decl.model_identity.get('model', '?')}")
+    print("  status: stub — full orchestration in Stage A exit test")
+    return 0
+
+
+def _cmd_transform_approve(
+    args: argparse.Namespace, config: Config,
+) -> int:
+    with open_catalogue(config.root_dir) as conn:
+        approve(conn, args.approval_id)
+    print(f"approved: {args.approval_id}")
+    return 0
+
+
+def _cmd_transform_reject(
+    args: argparse.Namespace, config: Config,
+) -> int:
+    with open_catalogue(config.root_dir) as conn:
+        reject(conn, args.approval_id, reason=args.reason)
+    print(f"rejected: {args.approval_id} ({args.reason})")
+    return 0
+
+
+def _cmd_transform_status(
+    args: argparse.Namespace, config: Config,
+) -> int:
+    with open_catalogue(config.root_dir) as conn:
+        pending = list_pending(conn)
+    if not pending:
+        print("no pending approvals")
+        return 0
+    for record in pending:
+        name_filter = getattr(args, "name", None)
+        if name_filter and record.transform_name != name_filter:
+            continue
+        print(
+            f"  {record.approval_id}  {record.transform_name}  "
+            f"sources={record.source_count}  "
+            f"cost=${record.cost_estimate_usd or 0:.2f}"
+        )
+    return 0
+
+
+def _cmd_transform_show(
+    args: argparse.Namespace, config: Config,
+) -> int:
+    import json
+
+    with open_catalogue(config.root_dir) as conn:
+        entry = read_artifact(config.root_dir, conn, args.cache_key)
+    if entry is None:
+        print(
+            f"artifact {args.cache_key} not found", file=sys.stderr,
+        )
+        return 1
+    print(f"cache_key:    {entry.cache_key}")
+    print(f"status:       {entry.status}")
+    print(f"producer:     {entry.producer_name}@{entry.producer_version}")
+    print(f"input_hash:   {entry.input_hash}")
+    print(f"produced_at:  {entry.produced_at}")
+    if entry.size_bytes is not None:
+        print(f"size:         {entry.size_bytes} bytes")
+
+    lf = lineage_file(config.root_dir, args.cache_key)
+    if lf.exists():
+        lineage = json.loads(lf.read_text(encoding="utf-8"))
+        print("lineage:")
+        for inp in lineage.get("inputs", []):
+            print(f"  {inp['cache_key'][:12]}…  role={inp['role']}")
+
+    mf = meta_file(config.root_dir, args.cache_key)
+    if mf.exists():
+        meta = json.loads(mf.read_text(encoding="utf-8"))
+        pm = meta.get("producer_metadata", {})
+        if pm.get("prompt_name"):
+            print(f"prompt:       {pm['prompt_name']}")
+        if pm.get("model_identity"):
+            model = pm["model_identity"].get("model", "?")
+            print(f"model:        {model}")
+
+    return 0
+
+
+_TRANSFORM_SUBCOMMANDS: dict[
+    str, Callable[[argparse.Namespace, Config], int]
+] = {
+    "list": _cmd_transform_list,
+    "run": _cmd_transform_run,
+    "approve": _cmd_transform_approve,
+    "reject": _cmd_transform_reject,
+    "status": _cmd_transform_status,
+    "show": _cmd_transform_show,
+}
+
+
 # Explicit subcommand table. Grep-friendly: searching for "migrate"
 # finds both this entry and the function that handles it.
 _SUBCOMMANDS: dict[str, Callable[[argparse.Namespace, Config], int]] = {
@@ -319,4 +512,5 @@ _SUBCOMMANDS: dict[str, Callable[[argparse.Namespace, Config], int]] = {
     "rebuild-catalogue": _cmd_rebuild_catalogue,
     "ingest": _cmd_ingest,
     "extract": _cmd_extract,
+    "transform": _cmd_transform,
 }
