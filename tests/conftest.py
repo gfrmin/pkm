@@ -44,8 +44,9 @@ def migrated_root(tmp_root: Path) -> Path:
 
     Produces a knowledge root with the catalogue file present and
     at the current schema version. Cache-level tests use this
-    fixture so they can ``open_catalogue`` and expect the v1 tables
-    (schema_meta, sources, source_paths, artifacts) to exist.
+    fixture so they can ``open_catalogue`` and expect all tables
+    (schema_meta, sources, source_paths, source_tags, artifacts,
+    artifact_lineage, pending_approvals, etc.) to exist.
     """
     run_migrations(tmp_root)
     return tmp_root

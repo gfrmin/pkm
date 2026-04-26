@@ -41,7 +41,7 @@ def test_fresh_root_migrates_to_current_schema(tmp_root: Path) -> None:
     the current set rather than a specific version.
     """
     applied = run_migrations(tmp_root)
-    assert applied == [1, 2]
+    assert applied == [1, 2, 3]
 
     with open_catalogue(tmp_root) as conn:
         rows = conn.execute(
@@ -51,6 +51,7 @@ def test_fresh_root_migrates_to_current_schema(tmp_root: Path) -> None:
         assert rows == [
             (1, "0001_initial_schema.py"),
             (2, "0002_normalise_tags.py"),
+            (3, "0003_transform_substrate.py"),
         ]
 
         tables = {
@@ -66,6 +67,11 @@ def test_fresh_root_migrates_to_current_schema(tmp_root: Path) -> None:
             "source_paths",
             "source_tags",
             "artifacts",
+            "artifact_lineage",
+            "pending_approvals",
+            "approval_sources",
+            "approval_samples",
+            "approval_reasons",
         } <= tables
 
         indexes = {
@@ -80,6 +86,7 @@ def test_fresh_root_migrates_to_current_schema(tmp_root: Path) -> None:
             "idx_artifacts_producer",
             "idx_artifacts_status",
             "idx_source_tags_tag",
+            "idx_lineage_input",
         } <= indexes
 
 
@@ -92,14 +99,14 @@ def test_second_run_is_a_proven_no_op(tmp_root: Path) -> None:
     expressed for schema state.
     """
     applied_first = run_migrations(tmp_root)
-    assert applied_first == [1, 2]
+    assert applied_first == [1, 2, 3]
 
     with open_catalogue(tmp_root) as conn:
         first_snapshot = conn.execute(
             "SELECT schema_version, migration_id, migration_hash, applied_at "
             "FROM schema_meta ORDER BY schema_version"
         ).fetchall()
-    assert len(first_snapshot) == 2
+    assert len(first_snapshot) == 3
 
     applied_second = run_migrations(tmp_root)
     assert applied_second == []

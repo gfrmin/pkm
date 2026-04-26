@@ -108,7 +108,7 @@ def test_migrate_on_fresh_root_applies_pending_set(
     assert rc == 0
     out = capsys.readouterr().out
     assert "applied" in out
-    assert "[1, 2]" in out
+    assert "[1, 2, 3]" in out
     assert (tmp_root / "catalogue.duckdb").exists()
 
 
@@ -140,7 +140,7 @@ def test_migrate_dry_run_reports_and_writes_nothing(
     rc2 = main(["--config", str(cfg), "migrate"])
     assert rc2 == 0
     out2 = capsys.readouterr().out
-    assert "[1, 2]" in out2  # would have been "no pending" if dry-run had written
+    assert "[1, 2, 3]" in out2  # would have been "no pending" if dry-run had written
 
 
 # --- rebuild-catalogue ---------------------------------------------------
