@@ -179,3 +179,171 @@ def test_compute_cache_key_is_deterministic_and_input_isolated() -> None:
     # hashing module silently accommodates.
     with pytest.raises(TypeError):
         compute_cache_key(**{**base, "producer_config": {"bad": {1, 2, 3}}})
+
+
+# --- Test 3 -----------------------------------------------------------------
+
+def test_schema_version_2_cache_key() -> None:
+    """schema_version 2 (transforms) produces a different key from
+    schema_version 1, even with the same base fields. The v2 payload
+    includes ``model_identity_hash`` and ``prompt_hash``.
+
+    SPEC v0.2.0 §17.1: the two formats are non-overlapping by
+    construction.
+    """
+    valid_hash = "a" * 64
+    model_identity = {
+        "provider": "anthropic",
+        "model": "claude-haiku-4-5",
+        "inference_params": {"temperature": 0.0, "max_tokens": 4096},
+    }
+    prompt_hash = "b" * 64
+    base_v2 = dict(
+        input_hash=valid_hash,
+        producer_name="entity_extraction",
+        producer_version="0.1.0",
+        producer_config={"schema": "entity_extraction_v1"},
+        schema_version=2,
+        model_identity=model_identity,
+        prompt_hash=prompt_hash,
+    )
+
+    key = compute_cache_key(**base_v2)
+
+    # Shape: 64 lowercase hex.
+    assert len(key) == 64
+    assert HEX64.match(key)
+
+    # Deterministic.
+    for _ in range(5):
+        assert compute_cache_key(**base_v2) == key
+
+    # Different from schema_version 1 with same base fields.
+    key_v1 = compute_cache_key(
+        input_hash=valid_hash,
+        producer_name="entity_extraction",
+        producer_version="0.1.0",
+        producer_config={"schema": "entity_extraction_v1"},
+    )
+    assert key != key_v1
+
+    # Perturbing model_identity produces a different key.
+    changed_model = {**model_identity, "model": "claude-sonnet-4-6"}
+    assert compute_cache_key(**{**base_v2, "model_identity": changed_model}) != key
+
+    # Perturbing prompt_hash produces a different key.
+    assert compute_cache_key(**{**base_v2, "prompt_hash": "c" * 64}) != key
+
+    # model_identity key order collapses via canonicalisation.
+    reordered_model = {
+        "model": "claude-haiku-4-5",
+        "inference_params": {"max_tokens": 4096, "temperature": 0.0},
+        "provider": "anthropic",
+    }
+    assert compute_cache_key(**{**base_v2, "model_identity": reordered_model}) == key
+
+    # Golden key for v2 — pins the algorithm. If this changes, every
+    # existing transform cache entry is invalidated.
+    assert compute_cache_key(
+        input_hash="0" * 64,
+        producer_name="test",
+        producer_version="0.1.0",
+        producer_config={},
+        schema_version=2,
+        model_identity={"provider": "stub", "model": "stub"},
+        prompt_hash="0" * 64,
+    ) == "9277a58a0cf91e6292da4aaa744e4bb44c90da30f4377d1c1e721c3e9148db7c"
+
+
+# --- Test 4 -----------------------------------------------------------------
+
+def test_schema_version_validation() -> None:
+    """schema_version discriminator enforces that v1 and v2 payloads
+    use the correct combination of arguments.
+    """
+    valid_hash = "a" * 64
+    model_identity = {"provider": "stub", "model": "stub"}
+
+    # v1 rejects model_identity.
+    with pytest.raises(ValueError, match=r"schema_version.*1"):
+        compute_cache_key(
+            input_hash=valid_hash,
+            producer_name="pandoc",
+            producer_version="3.1.9",
+            producer_config={},
+            schema_version=1,
+            model_identity=model_identity,
+        )
+
+    # v1 rejects prompt_hash.
+    with pytest.raises(ValueError, match=r"schema_version.*1"):
+        compute_cache_key(
+            input_hash=valid_hash,
+            producer_name="pandoc",
+            producer_version="3.1.9",
+            producer_config={},
+            schema_version=1,
+            prompt_hash=valid_hash,
+        )
+
+    # v2 requires model_identity — missing raises.
+    with pytest.raises(ValueError, match=r"schema_version.*2"):
+        compute_cache_key(
+            input_hash=valid_hash,
+            producer_name="test",
+            producer_version="0.1.0",
+            producer_config={},
+            schema_version=2,
+            prompt_hash=valid_hash,
+        )
+
+    # v2 requires prompt_hash — missing raises.
+    with pytest.raises(ValueError, match=r"schema_version.*2"):
+        compute_cache_key(
+            input_hash=valid_hash,
+            producer_name="test",
+            producer_version="0.1.0",
+            producer_config={},
+            schema_version=2,
+            model_identity=model_identity,
+        )
+
+    # Unsupported schema_version raises.
+    with pytest.raises(ValueError, match=r"schema_version"):
+        compute_cache_key(
+            input_hash=valid_hash,
+            producer_name="test",
+            producer_version="0.1.0",
+            producer_config={},
+            schema_version=3,
+        )
+
+
+# --- Test 5 -----------------------------------------------------------------
+
+def test_compute_model_identity_hash() -> None:
+    """``compute_model_identity_hash`` is deterministic and order-
+    insensitive, matching the canonical-JSON rule.
+    """
+    from pkm.hashing import compute_model_identity_hash
+
+    model_a = {
+        "provider": "anthropic",
+        "model": "claude-haiku-4-5",
+        "inference_params": {"temperature": 0.0, "max_tokens": 4096},
+    }
+    model_b = {
+        "model": "claude-haiku-4-5",
+        "inference_params": {"max_tokens": 4096, "temperature": 0.0},
+        "provider": "anthropic",
+    }
+
+    hash_a = compute_model_identity_hash(model_a)
+    hash_b = compute_model_identity_hash(model_b)
+
+    assert HEX64.match(hash_a)
+    assert hash_a == hash_b
+
+    # Different model → different hash.
+    model_c = {**model_a, "model": "claude-sonnet-4-6"}
+    assert compute_model_identity_hash(model_c) != hash_a

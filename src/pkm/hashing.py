@@ -15,7 +15,9 @@ from typing import Any
 
 _HEX64_RE = re.compile(r"^[0-9a-f]{64}$")
 
-_CACHE_KEY_SCHEMA_VERSION = 1
+_VALID_SCHEMA_VERSIONS = frozenset({1, 2})
+
+EMPTY_HASH = hashlib.sha256(b"").hexdigest()
 
 
 def canonical_json(obj: Any) -> str:
@@ -50,56 +52,46 @@ def canonical_json(obj: Any) -> str:
     return json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
 
 
+def compute_model_identity_hash(model_identity: dict[str, Any]) -> str:
+    """SHA-256 hex of the canonical-JSON form of a model identity dict."""
+    return hashlib.sha256(
+        canonical_json(model_identity).encode("utf-8")
+    ).hexdigest()
+
+
 def compute_cache_key(
     input_hash: str,
     producer_name: str,
     producer_version: str,
     producer_config: dict[str, Any],
+    *,
+    schema_version: int = 1,
+    model_identity: dict[str, Any] | None = None,
+    prompt_hash: str | None = None,
 ) -> str:
     """Compute the cache key for an artifact — the ONE function that
     constructs cache keys anywhere in the system (SPEC §4.3).
 
-    Formula (SPEC §4.2)::
+    ``schema_version`` selects the payload format:
 
-        producer_config_hash = sha256(canonical_json(producer_config))
-        cache_key = sha256(canonical_json({
-            "schema_version": 1,
-            "input_hash":            input_hash,
-            "producer_name":         producer_name,
-            "producer_version":      producer_version,
-            "producer_config_hash":  producer_config_hash,
-        }))
+    - **1** (v0.1.x extractors): 5-field payload, ``model_identity``
+      and ``prompt_hash`` must both be ``None``.
+    - **2** (v0.2.0 transforms): 7-field payload, both
+      ``model_identity`` and ``prompt_hash`` required.
 
-    Invariants:
-
-      - ``input_hash`` is the SHA-256 of the input's *byte content*,
-        never the cache key of an upstream artifact (SPEC §4.2).
-      - None of: timestamp, path, user identity, API key, retry count,
-        hostname, run-id ever enters this function (SPEC §4.4).
-      - ``schema_version`` is part of the hashed payload so a future
-        change in key structure invalidates old keys loudly, not
-        silently.
-      - Returned hash is always 64 lowercase hex characters
-        (SPEC §14.4).
-
-    Args:
-        input_hash: 64-char lowercase SHA-256 hex of the input's
-            content. Validated on entry.
-        producer_name: Stable identifier (e.g., ``"pandoc"``).
-        producer_version: Exact installed version (e.g., ``"3.1.9"``).
-            SPEC §14.5 startup check verifies installed == configured;
-            this function trusts the caller.
-        producer_config: Parameters controlling producer behaviour.
-            Must be canonical-JSON-encodable.
+    The default is 1 so existing v0.1.x call sites are unchanged.
+    The validation backstop catches any mismatch between
+    ``schema_version`` and the provided kwargs.
 
     Returns:
         64-character lowercase SHA-256 hex.
 
     Raises:
-        ValueError: if ``input_hash`` is not exactly 64 lowercase hex
-            characters.
-        TypeError: if ``producer_config`` is not canonical-JSON-
-            encodable (surfaced from ``canonical_json``).
+        ValueError: if ``input_hash`` or ``prompt_hash`` is not 64
+            lowercase hex; if ``schema_version`` is unsupported; if
+            the kwargs don't match the schema_version contract.
+        TypeError: if ``producer_config`` or ``model_identity`` is
+            not canonical-JSON-encodable.
     """
     if not _HEX64_RE.match(input_hash):
         raise ValueError(
@@ -107,15 +99,48 @@ def compute_cache_key(
             f"got {input_hash!r}"
         )
 
+    if schema_version not in _VALID_SCHEMA_VERSIONS:
+        raise ValueError(
+            f"schema_version must be one of {sorted(_VALID_SCHEMA_VERSIONS)}, "
+            f"got {schema_version!r}"
+        )
+
+    if schema_version == 1:
+        if model_identity is not None or prompt_hash is not None:
+            raise ValueError(
+                "schema_version 1 does not accept model_identity or "
+                "prompt_hash — both must be None for v0.1.x extractors"
+            )
+    else:
+        if model_identity is None or prompt_hash is None:
+            raise ValueError(
+                "schema_version 2 requires both model_identity and "
+                "prompt_hash — neither may be None for transforms"
+            )
+        if not _HEX64_RE.match(prompt_hash):
+            raise ValueError(
+                f"prompt_hash must be exactly 64 lowercase hex characters, "
+                f"got {prompt_hash!r}"
+            )
+
     producer_config_hash = hashlib.sha256(
         canonical_json(producer_config).encode("utf-8")
     ).hexdigest()
 
-    payload = {
-        "schema_version": _CACHE_KEY_SCHEMA_VERSION,
+    payload: dict[str, Any] = {
+        "schema_version": schema_version,
         "input_hash": input_hash,
         "producer_name": producer_name,
         "producer_version": producer_version,
         "producer_config_hash": producer_config_hash,
     }
+
+    if schema_version == 2:
+        assert model_identity is not None  # guaranteed by validation
+        assert prompt_hash is not None
+        payload["model_identity_hash"] = compute_model_identity_hash(
+            model_identity
+        )
+        payload["prompt_hash"] = prompt_hash
+
     return hashlib.sha256(canonical_json(payload).encode("utf-8")).hexdigest()
