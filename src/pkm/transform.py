@@ -88,6 +88,16 @@ class TransformProducer(ABC):
         May raise on malformed output; ``produce`` catches.
         """
 
+    def post_validate(
+        self, parsed: dict[str, Any], input_content: bytes,
+    ) -> None:
+        """Optional hook for producer-specific validation beyond jsonschema.
+
+        Called after ``jsonschema.validate`` succeeds.  Raise to signal
+        a failure; ``produce`` catches and converts to ``status='failed'``.
+        """
+        return
+
     def produce(
         self,
         input_path: Path,
@@ -110,6 +120,7 @@ class TransformProducer(ABC):
             parsed = self.parse_output(response.raw_text)
 
             jsonschema.validate(parsed, self.output_schema)
+            self.post_validate(parsed, input_content)
 
             content_bytes = canonical_json(parsed).encode("utf-8")
             prompt_hash = hashlib.sha256(

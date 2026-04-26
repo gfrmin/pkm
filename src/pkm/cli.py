@@ -256,6 +256,17 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Execute a transform over eligible sources.",
     )
     p_t_run.add_argument("name", help="transform declaration name")
+    p_t_run.add_argument(
+        "--limit",
+        type=int,
+        metavar="N",
+        help="process at most N eligible sources",
+    )
+    p_t_run.add_argument(
+        "--approval-id",
+        metavar="UUID",
+        help="skip policy evaluation with a pre-approved ID",
+    )
 
     p_t_approve = t_sub.add_parser(
         "approve",
@@ -402,17 +413,34 @@ def _cmd_transform_list(
 def _cmd_transform_run(
     args: argparse.Namespace, config: Config,
 ) -> int:
-    from pkm.transform_declaration import load_transform_declaration
+    from pkm.transform_run import run_transform
 
-    decl = load_transform_declaration(config.root_dir, args.name)
-    print(
-        f"transform run: {decl.name} v{decl.version} "
-        f"(declaration hash {decl.declaration_hash[:12]}…)"
+    result = run_transform(
+        config.root_dir,
+        config,
+        args.name,
+        limit=getattr(args, "limit", None),
+        approval_id=getattr(args, "approval_id", None),
+        progress=lambda line: print(line),
     )
-    print(f"  prompt: {decl.prompt_name} (hash {decl.prompt_hash[:12]}…)")
-    print(f"  model: {decl.model_identity.get('model', '?')}")
-    print("  status: stub — full orchestration in Stage A exit test")
-    return 0
+
+    if result.blocked:
+        print(f"blocked: {result.block_reason}", file=sys.stderr)
+        return 1
+
+    if result.approval_required:
+        print(f"approval required: {result.approval_id}")
+        print("run `pkm transform approve <id>` to proceed")
+        return 0
+
+    print(
+        f"transform: {result.processed}/{result.total_sources} sources, "
+        f"{result.succeeded} succeeded, {result.failed} failed, "
+        f"{result.cache_hits} cache hits, "
+        f"${result.total_cost_usd:.4f} total cost "
+        f"({result.elapsed_seconds:.1f}s)"
+    )
+    return 0 if result.failed == 0 else 1
 
 
 def _cmd_transform_approve(

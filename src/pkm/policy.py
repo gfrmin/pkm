@@ -11,7 +11,7 @@ decision even if other policies Allow.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol
 
 if TYPE_CHECKING:
@@ -65,6 +65,7 @@ class PolicyContext:
     root: Any
     daily_spend_usd: float = 0.0
     monthly_spend_usd: float = 0.0
+    policy_config: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
 class PolicyCallable(Protocol):

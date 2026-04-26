@@ -26,6 +26,8 @@ dependencies = [
     "pikepdf>=10.5.1",
     # Transform output validation (SPEC v0.2.0 §20.2).
     "jsonschema>=4.23",
+    # LLM provider SDK for Phase 2 transforms (SPEC v0.2.0 §20).
+    "anthropic>=0.42",
 ]
 
 [project.scripts]

@@ -78,3 +78,63 @@ def test_load_config_invalid_yaml_raises(tmp_path: Path) -> None:
     with pytest.raises(ConfigError) as excinfo:
         load_config(cfg_path)
     assert "YAML" in str(excinfo.value)
+
+
+# --- policies section ---------------------------------------------------
+
+
+def test_load_config_without_policies_has_empty_dict(
+    tmp_path: Path,
+) -> None:
+    cfg_path = tmp_path / "config.yaml"
+    _write(cfg_path, f"root_dir: {tmp_path}\n")
+    cfg = load_config(cfg_path)
+    assert cfg.policies == {}
+
+
+def test_load_config_parses_policies(tmp_path: Path) -> None:
+    cfg_path = tmp_path / "config.yaml"
+    _write(
+        cfg_path,
+        f"root_dir: {tmp_path}\n"
+        "policies:\n"
+        "  cost_gate:\n"
+        "    budget_per_invocation_usd: 5.00\n"
+        "    budget_per_day_usd: 50.00\n"
+        "  sensitive_doc_gate:\n"
+        "    tags: [sensitive, medical]\n",
+    )
+    cfg = load_config(cfg_path)
+    assert "cost_gate" in cfg.policies
+    assert cfg.policies["cost_gate"]["budget_per_invocation_usd"] == 5.00
+    assert "sensitive_doc_gate" in cfg.policies
+    assert cfg.policies["sensitive_doc_gate"]["tags"] == [
+        "sensitive", "medical",
+    ]
+
+
+def test_load_config_policies_non_mapping_raises(tmp_path: Path) -> None:
+    cfg_path = tmp_path / "config.yaml"
+    _write(
+        cfg_path,
+        f"root_dir: {tmp_path}\n"
+        "policies: not_a_mapping\n",
+    )
+    with pytest.raises(ConfigError) as excinfo:
+        load_config(cfg_path)
+    assert "policies" in str(excinfo.value)
+
+
+def test_load_config_policy_value_non_mapping_raises(
+    tmp_path: Path,
+) -> None:
+    cfg_path = tmp_path / "config.yaml"
+    _write(
+        cfg_path,
+        f"root_dir: {tmp_path}\n"
+        "policies:\n"
+        "  cost_gate: just_a_string\n",
+    )
+    with pytest.raises(ConfigError) as excinfo:
+        load_config(cfg_path)
+    assert "cost_gate" in str(excinfo.value)

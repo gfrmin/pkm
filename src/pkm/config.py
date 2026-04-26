@@ -74,6 +74,10 @@ class Config:
     """Extractor configs keyed by producer name. Empty if the
     config.yaml ``extractors`` section is absent."""
 
+    policies: dict[str, dict[str, Any]] = field(default_factory=dict)
+    """Policy configs keyed by policy name (SPEC v0.2.0 §22.2).
+    Empty if the config.yaml ``policies`` section is absent."""
+
 
 def load_config(path: Path) -> Config:
     """Load and validate ``config.yaml`` at ``path``.
@@ -120,8 +124,12 @@ def load_config(path: Path) -> Config:
     root_dir = Path(root_dir_raw).expanduser().resolve()
 
     extractors = _parse_extractors(raw.get("extractors"), path)
+    policies = _parse_policies(raw.get("policies"), path)
 
-    return Config(root_dir=root_dir, source=path, extractors=extractors)
+    return Config(
+        root_dir=root_dir, source=path,
+        extractors=extractors, policies=policies,
+    )
 
 
 def _parse_extractors(
@@ -165,4 +173,36 @@ def _parse_extractors(
                 f"must be a mapping, got {type(inner).__name__}"
             )
         result[name] = ExtractorConfig(version=version, config=inner)
+    return result
+
+
+def _parse_policies(
+    raw: Any, config_path: Path,
+) -> dict[str, dict[str, Any]]:
+    """Parse the ``policies`` section of ``config.yaml``.
+
+    Missing section -> empty dict.  Each policy value must be a mapping
+    of configuration keys for that policy.
+    """
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise ConfigError(
+            f"config at {config_path}: `policies` must be a mapping, "
+            f"got {type(raw).__name__}"
+        )
+
+    result: dict[str, dict[str, Any]] = {}
+    for name, spec in raw.items():
+        if not isinstance(name, str):
+            raise ConfigError(
+                f"config at {config_path}: policy name must be a "
+                f"string, got {type(name).__name__}"
+            )
+        if not isinstance(spec, dict):
+            raise ConfigError(
+                f"config at {config_path}: policies.{name} must be a "
+                f"mapping, got {type(spec).__name__}"
+            )
+        result[name] = spec
     return result
