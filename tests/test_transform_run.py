@@ -284,7 +284,7 @@ def _setup_transform_root(
 
     decl_yaml = (
         "name: entity_extraction\n"
-        'version: "0.1.0"\n'
+        'version: "0.2.0"\n'
         "producer_class: pkm.transforms.entity_extraction.EntityExtractionProducer\n"
         "model:\n"
         "  provider: anthropic\n"

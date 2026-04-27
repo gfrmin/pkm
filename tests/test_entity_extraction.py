@@ -15,6 +15,7 @@ from pkm.transform import ModelResponse
 from pkm.transform_declaration import TransformDeclaration
 from pkm.transforms.entity_extraction import (
     EntityExtractionProducer,
+    _strip_unsupported_for_api,
     estimate_cost,
 )
 
@@ -63,7 +64,7 @@ _PROMPT_TEMPLATE = "Extract entities from:\n---\n{text}\n---"
 def _make_declaration(**overrides: Any) -> TransformDeclaration:
     defaults: dict[str, Any] = {
         "name": "entity_extraction",
-        "version": "0.1.0",
+        "version": "0.2.0",
         "producer_class": "pkm.transforms.entity_extraction.EntityExtractionProducer",
         "model_identity": {
             "provider": "anthropic",
@@ -126,6 +127,156 @@ def _valid_output_for(text: str) -> dict[str, Any]:
     }
 
 
+# --- _strip_unsupported_for_api -----------------------------------------
+
+
+def test_strip_removes_numeric_constraints() -> None:
+    schema: dict[str, Any] = {
+        "type": "number",
+        "minimum": 0,
+        "maximum": 1,
+        "exclusiveMinimum": -1,
+        "exclusiveMaximum": 2,
+        "multipleOf": 0.1,
+    }
+    result = _strip_unsupported_for_api(schema)
+    assert "minimum" not in result
+    assert "maximum" not in result
+    assert "exclusiveMinimum" not in result
+    assert "exclusiveMaximum" not in result
+    assert "multipleOf" not in result
+    assert result["type"] == "number"
+
+
+def test_strip_removes_string_constraints() -> None:
+    schema: dict[str, Any] = {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 100,
+    }
+    result = _strip_unsupported_for_api(schema)
+    assert "minLength" not in result
+    assert "maxLength" not in result
+
+
+def test_strip_removes_schema_keyword() -> None:
+    schema: dict[str, Any] = {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {},
+    }
+    result = _strip_unsupported_for_api(schema)
+    assert "$schema" not in result
+
+
+def test_strip_recurses_into_nested_objects() -> None:
+    result = _strip_unsupported_for_api(_ENTITY_SCHEMA)
+    span_props = (
+        result["properties"]["entities"]["items"]
+        ["properties"]["span"]["properties"]
+    )
+    assert "minimum" not in span_props["start"]
+    assert "minimum" not in span_props["end"]
+
+    conf = (
+        result["properties"]["entities"]["items"]
+        ["properties"]["confidence"]
+    )
+    assert "minimum" not in conf
+    assert "maximum" not in conf
+
+
+def test_strip_adds_additional_properties_false() -> None:
+    schema: dict[str, Any] = {
+        "type": "object",
+        "properties": {
+            "name": {"type": "string"},
+        },
+    }
+    result = _strip_unsupported_for_api(schema)
+    assert result["additionalProperties"] is False
+
+
+def test_strip_preserves_existing_additional_properties() -> None:
+    schema: dict[str, Any] = {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": True,
+    }
+    result = _strip_unsupported_for_api(schema)
+    assert result["additionalProperties"] is True
+
+
+def test_strip_preserves_allowed_keys() -> None:
+    result = _strip_unsupported_for_api(_ENTITY_SCHEMA)
+    assert result["type"] == "object"
+    assert "entities" in result["required"]
+    assert result["properties"]["format_version"]["const"] == 1
+    items = result["properties"]["entities"]["items"]
+    assert items["properties"]["type"]["enum"] == [
+        "person", "organization", "location",
+        "date", "money", "other",
+    ]
+
+
+def test_strip_handles_deeply_nested_schema() -> None:
+    schema: dict[str, Any] = {
+        "type": "object",
+        "properties": {
+            "a": {
+                "type": "object",
+                "properties": {
+                    "b": {
+                        "type": "object",
+                        "properties": {
+                            "c": {
+                                "type": "integer",
+                                "minimum": 0,
+                            },
+                        },
+                    },
+                },
+            },
+        },
+    }
+    result = _strip_unsupported_for_api(schema)
+    c = result["properties"]["a"]["properties"]["b"]["properties"]["c"]
+    assert "minimum" not in c
+    assert c["type"] == "integer"
+
+
+def test_strip_removes_max_items() -> None:
+    schema: dict[str, Any] = {
+        "type": "array",
+        "items": {"type": "string"},
+        "maxItems": 10,
+        "uniqueItems": True,
+    }
+    result = _strip_unsupported_for_api(schema)
+    assert "maxItems" not in result
+    assert "uniqueItems" not in result
+
+
+def test_strip_keeps_min_items_zero_or_one() -> None:
+    schema: dict[str, Any] = {
+        "type": "array",
+        "items": {"type": "string"},
+        "minItems": 1,
+    }
+    result = _strip_unsupported_for_api(schema)
+    assert result["minItems"] == 1
+
+
+def test_strip_removes_min_items_above_one() -> None:
+    schema: dict[str, Any] = {
+        "type": "array",
+        "items": {"type": "string"},
+        "minItems": 5,
+    }
+    result = _strip_unsupported_for_api(schema)
+    assert "minItems" not in result
+
+
 # --- render_prompt -------------------------------------------------------
 
 
@@ -160,10 +311,34 @@ def test_call_model_returns_model_response() -> None:
     client.messages.create.assert_called_once()
 
 
+def test_call_model_includes_output_config() -> None:
+    output = {"format_version": 1, "entities": []}
+    client = _make_mock_client(output)
+    decl = _make_declaration()
+    producer = EntityExtractionProducer(
+        declaration=decl, client=client,
+    )
+    producer.call_model("test prompt")
+
+    call_kwargs = client.messages.create.call_args
+    oc = call_kwargs.kwargs.get("output_config") or call_kwargs[1].get(
+        "output_config",
+    )
+    assert oc is not None
+    assert oc["format"]["type"] == "json_schema"
+    api_schema = oc["format"]["schema"]
+    assert "$schema" not in api_schema
+    span_start = (
+        api_schema["properties"]["entities"]["items"]
+        ["properties"]["span"]["properties"]["start"]
+    )
+    assert "minimum" not in span_start
+
+
 # --- parse_output --------------------------------------------------------
 
 
-def test_parse_output_handles_plain_json() -> None:
+def test_parse_output_handles_clean_json() -> None:
     decl = _make_declaration()
     producer = EntityExtractionProducer(
         declaration=decl, client=MagicMock(),
@@ -173,14 +348,13 @@ def test_parse_output_handles_plain_json() -> None:
     assert result == {"format_version": 1, "entities": []}
 
 
-def test_parse_output_strips_code_fences() -> None:
+def test_parse_output_rejects_malformed_json() -> None:
     decl = _make_declaration()
     producer = EntityExtractionProducer(
         declaration=decl, client=MagicMock(),
     )
-    raw = '```json\n{"format_version": 1, "entities": []}\n```'
-    result = producer.parse_output(raw)
-    assert result == {"format_version": 1, "entities": []}
+    with pytest.raises(json.JSONDecodeError):
+        producer.parse_output("not json at all")
 
 
 # --- post_validate -------------------------------------------------------
@@ -239,6 +413,73 @@ def test_post_validate_catches_start_ge_end() -> None:
     }
     with pytest.raises(ValueError, match=r"start.*>=.*end"):
         producer.post_validate(parsed, b"Hello World")
+
+
+# --- client-side validation catches API-unenforced constraints -----------
+
+
+def test_client_side_validation_catches_confidence_out_of_range(
+    tmp_path: Path,
+) -> None:
+    """The API doesn't enforce minimum/maximum on confidence, but
+    client-side jsonschema validation against the canonical schema does.
+    """
+    text = "Alice works here"
+    src = tmp_path / "doc.txt"
+    src.write_text(text, encoding="utf-8")
+
+    output = {
+        "format_version": 1,
+        "entities": [
+            {
+                "text": "Alice",
+                "type": "person",
+                "span": {"start": 0, "end": 5},
+                "confidence": 1.5,
+            },
+        ],
+    }
+    client = _make_mock_client(output)
+    decl = _make_declaration()
+    producer = EntityExtractionProducer(
+        declaration=decl, client=client,
+    )
+
+    result = producer.produce(src, "a" * 64, {})
+    assert result.status == "failed"
+    assert "schema_validation_failed" in (result.error_message or "")
+
+
+def test_client_side_validation_catches_negative_span(
+    tmp_path: Path,
+) -> None:
+    """The canonical schema has minimum: 0 on span fields; the API
+    schema has that stripped.  Client-side validation catches it.
+    """
+    text = "Alice works here"
+    src = tmp_path / "doc.txt"
+    src.write_text(text, encoding="utf-8")
+
+    output = {
+        "format_version": 1,
+        "entities": [
+            {
+                "text": "Alice",
+                "type": "person",
+                "span": {"start": -1, "end": 5},
+                "confidence": 0.9,
+            },
+        ],
+    }
+    client = _make_mock_client(output)
+    decl = _make_declaration()
+    producer = EntityExtractionProducer(
+        declaration=decl, client=client,
+    )
+
+    result = producer.produce(src, "a" * 64, {})
+    assert result.status == "failed"
+    assert "schema_validation_failed" in (result.error_message or "")
 
 
 # --- produce end-to-end -------------------------------------------------

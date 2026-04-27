@@ -3,10 +3,17 @@
 Concrete ``TransformProducer`` that sends extracted text through
 Anthropic Haiku 4.5 for named-entity recognition.  Output conforms
 to the ``entity_extraction_v1`` JSON schema (§19.3).
+
+Uses Anthropic's Structured Outputs (``output_config``) to constrain
+model output to a derived schema.  The canonical schema
+(``schemas/entity_extraction_v1.json``) retains all constraints
+for client-side ``jsonschema`` validation; the transmitted schema
+has unsupported properties stripped by ``_strip_unsupported_for_api``.
 """
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import time
@@ -24,6 +31,48 @@ _HAIKU_INPUT_PRICE_PER_MTOK = 0.80
 _HAIKU_OUTPUT_PRICE_PER_MTOK = 4.00
 
 _CHARS_PER_TOKEN = 4
+
+_UNSUPPORTED_KEYS: frozenset[str] = frozenset({
+    "$schema",
+    "minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum",
+    "multipleOf",
+    "minLength", "maxLength",
+    "maxItems", "uniqueItems",
+    "oneOf", "not",
+    "if", "then", "else",
+    "prefixItems",
+})
+
+
+def _strip_unsupported_for_api(schema: dict[str, Any]) -> dict[str, Any]:
+    """Return a copy of *schema* safe to send to Anthropic's API.
+
+    Removes JSON Schema keywords the API doesn't support, and adds
+    ``additionalProperties: false`` to every ``object`` type (required
+    by the API).  The canonical schema retains the full constraints
+    for client-side validation.
+    """
+    out: dict[str, Any] = {}
+    for key, value in schema.items():
+        if key in _UNSUPPORTED_KEYS:
+            continue
+        if key == "minItems" and isinstance(value, int) and value > 1:
+            continue
+        if isinstance(value, dict):
+            out[key] = _strip_unsupported_for_api(value)
+        elif isinstance(value, list):
+            out[key] = [
+                _strip_unsupported_for_api(item)
+                if isinstance(item, dict) else item
+                for item in value
+            ]
+        else:
+            out[key] = value
+
+    if out.get("type") == "object" and "additionalProperties" not in out:
+        out["additionalProperties"] = False
+
+    return out
 
 
 def _compute_cost(input_tokens: int, output_tokens: int) -> float:
@@ -62,10 +111,16 @@ def estimate_cost(
 
 
 class EntityExtractionProducer(TransformProducer):
-    """Named-entity extraction via Anthropic Haiku 4.5."""
+    """Named-entity extraction via Anthropic Haiku 4.5.
+
+    Uses Structured Outputs (``output_config``) to constrain the
+    model's response to the transmitted schema.  Client-side
+    ``jsonschema`` validation against the canonical schema enforces
+    constraints the API doesn't support (e.g. numeric ranges).
+    """
 
     name = "entity_extraction"
-    version = "0.1.0"
+    version = "0.2.0"
 
     def __init__(
         self,
@@ -82,6 +137,9 @@ class EntityExtractionProducer(TransformProducer):
             "inference_params", {},
         )
         self._client = client or anthropic.Anthropic()
+        self._api_schema = _strip_unsupported_for_api(
+            copy.deepcopy(declaration.output_schema),
+        )
 
     def render_prompt(
         self, input_content: bytes, input_metadata: dict[str, Any],
@@ -96,6 +154,12 @@ class EntityExtractionProducer(TransformProducer):
             max_tokens=self._inference_params.get("max_tokens", 4096),
             temperature=self._inference_params.get("temperature", 0.0),
             messages=[{"role": "user", "content": prompt}],
+            output_config={
+                "format": {
+                    "type": "json_schema",
+                    "schema": self._api_schema,
+                },
+            },
         )
         latency_ms = int((time.monotonic() - t0) * 1000)
 
@@ -113,11 +177,7 @@ class EntityExtractionProducer(TransformProducer):
         )
 
     def parse_output(self, raw_output: str) -> dict[str, Any]:
-        text = raw_output.strip()
-        if text.startswith("```"):
-            text = text.split("\n", 1)[1]
-            text = text.rsplit("```", 1)[0]
-        return json.loads(text)  # type: ignore[no-any-return]
+        return json.loads(raw_output)  # type: ignore[no-any-return]
 
     def post_validate(
         self, parsed: dict[str, Any], input_content: bytes,
