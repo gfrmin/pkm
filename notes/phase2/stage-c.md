@@ -175,15 +175,48 @@ estimated sources but actually cost ~$0.26.
 ### No prompt revision needed
 
 All 10 adversarial categories pass. The v1 prompt + structured output
-is sufficient. No v2 prompt required.
+is sufficient. No v2 prompt required. Stage D starts with
+`entity_extraction_v1.txt`.
+
+### Stage D pre-flight: cost-gate budget
+
+The 19x conservatism means a 500-source Stage D run at real costs of
+~$0.50 will produce an estimate of ~$10, tripping the default
+per-invocation $5 gate. PHASE2.md §4.2 set the recalibration trigger
+at 1.5x; we are at 19x with a known, understood reason (max_tokens
+budget vs real output). Recalibrating on 22 synthetic-document data
+points would be premature — Stage D's 500-source real-corpus run is
+the right calibration sample. **Pre-flight action:** bump
+`budget_per_invocation_usd` in `config.yaml` to $50 for Stage D.
+Recalibrate the estimator after Stage D using real output-token
+distribution data.
 
 ## Changes made during Stage C
+
+### Source changes (bugs surfaced by live API)
+
+1. **Producer fix — `_correct_span` global fallback**
+   (`src/pkm/transforms/entity_extraction.py`): C3 categories 2, 4, 5,
+   and 9 all failed because Haiku 4.5 reports character offsets that are
+   wildly wrong (50+ chars off) for structured/long documents. The
+   original ±10-char windowed search couldn't find the entity text.
+   Added a `str.find` global fallback. Also restructured `post_validate`
+   to attempt correction before raising errors. **Producer change** —
+   does not affect cache keys (post-validation is post-cache).
+
+2. **Substrate fix — failed-result crash in `_execute_run`**
+   (`src/pkm/transform_run.py`): When `produce()` fails (e.g. API
+   error), `producer_metadata` is an empty dict, so `prompt_hash=""`
+   which crashes `compute_cache_key` (requires 64 hex chars). Added
+   early-out that logs and counts the failure without attempting
+   cache-key computation. **Substrate fix** — affects the orchestration
+   layer's error handling, not cache semantics.
+
+### Test and config changes
 
 | File | Change |
 |------|--------|
 | `pyproject.toml` | `@pytest.mark.llm` marker, `addopts` filter |
 | `tests/test_live_entity_extraction.py` | New: 12 live API tests (C1 + C2 + 10 C3) |
-| `src/pkm/transforms/entity_extraction.py` | `_correct_span` global fallback; `post_validate` restructured |
-| `src/pkm/transform_run.py` | Failed results skip cache-key computation |
-| `tests/test_entity_extraction.py` | Two span-correction unit tests |
+| `tests/test_entity_extraction.py` | Two span-correction unit tests (near-miss + global fallback) |
 | `notes/phase2/stage-c.md` | This file |
