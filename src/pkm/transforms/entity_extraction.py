@@ -110,6 +110,37 @@ def estimate_cost(
     )
 
 
+_SPAN_SEARCH_WINDOW = 10
+
+
+def _correct_span(
+    text: str, entity_text: str, reported_start: int,
+) -> tuple[int, int] | None:
+    """Search for *entity_text* near *reported_start* and return corrected span.
+
+    First searches within ``_SPAN_SEARCH_WINDOW`` characters of
+    the reported position.  If that misses, falls back to a global
+    ``str.find`` — LLMs frequently report wildly wrong offsets for
+    structured or long documents while still producing correct entity
+    text.  Returns ``None`` only when the text is absent entirely.
+    """
+    search_start = max(0, reported_start - _SPAN_SEARCH_WINDOW)
+    search_end = min(
+        len(text), reported_start + len(entity_text) + _SPAN_SEARCH_WINDOW,
+    )
+    window = text[search_start:search_end]
+    idx = window.find(entity_text)
+    if idx >= 0:
+        corrected_start = search_start + idx
+        return corrected_start, corrected_start + len(entity_text)
+
+    global_idx = text.find(entity_text)
+    if global_idx >= 0:
+        return global_idx, global_idx + len(entity_text)
+
+    return None
+
+
 class EntityExtractionProducer(TransformProducer):
     """Named-entity extraction via Anthropic Haiku 4.5.
 
@@ -182,7 +213,15 @@ class EntityExtractionProducer(TransformProducer):
     def post_validate(
         self, parsed: dict[str, Any], input_content: bytes,
     ) -> None:
-        """Span-index and span-text validation (PHASE2.md §4.5)."""
+        """Span-index and span-text validation (PHASE2.md §4.5).
+
+        LLMs frequently produce spans that are off by a few characters.
+        When ``text[start:end]`` does not match ``entity["text"]`` but
+        the entity text *does* appear within a small window around the
+        reported position, the span is corrected in-place and the
+        entity is accepted.  This keeps output data clean without
+        rejecting otherwise-correct extractions.
+        """
         text = input_content.decode("utf-8", errors="replace")
         text_len = len(text)
 
@@ -190,6 +229,25 @@ class EntityExtractionProducer(TransformProducer):
             span = entity.get("span", {})
             start = span.get("start", 0)
             end = span.get("end", 0)
+            expected = entity.get("text", "")
+
+            span_ok = (
+                0 <= start < end <= text_len
+                and text[start:end] == expected
+            )
+            if span_ok:
+                continue
+
+            corrected = _correct_span(text, expected, start)
+            if corrected is not None:
+                logger.debug(
+                    "entity[%d]: corrected span [%d:%d] -> [%d:%d] "
+                    "for %r",
+                    i, start, end, corrected[0], corrected[1], expected,
+                )
+                span["start"] = corrected[0]
+                span["end"] = corrected[1]
+                continue
 
             if start < 0 or end < 0:
                 raise ValueError(
@@ -205,9 +263,7 @@ class EntityExtractionProducer(TransformProducer):
                     f"entity[{i}]: span start ({start}) >= end ({end})"
                 )
             actual = text[start:end]
-            expected = entity.get("text", "")
-            if actual != expected:
-                raise ValueError(
-                    f"entity[{i}]: span text mismatch: "
-                    f"expected {expected!r}, got {actual!r}"
-                )
+            raise ValueError(
+                f"entity[{i}]: span text mismatch: "
+                f"expected {expected!r}, got {actual!r}"
+            )

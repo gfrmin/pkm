@@ -290,6 +290,18 @@ def _execute_run(
             result = producer.produce(cf, input_hash, {})
 
             prompt_hash = result.producer_metadata.get("prompt_hash", "")
+            if result.status != "success" or not prompt_hash:
+                failed += 1
+                _log_telemetry(
+                    root, decl, producer, "", src, result, True,
+                )
+                if progress is not None:
+                    progress(
+                        f"[{i}/{len(eligible)}] "
+                        f"{src.source_id[:12]}... {result.status}"
+                    )
+                continue
+
             cache_key = compute_cache_key(
                 input_hash=input_hash,
                 producer_name=producer.name,
@@ -318,10 +330,8 @@ def _execute_run(
 
             if not outcome.wrote:
                 cache_hits += 1
-            elif result.status == "success":
-                succeeded += 1
             else:
-                failed += 1
+                succeeded += 1
 
             source_cost = result.producer_metadata.get("cost_usd", 0.0)
             total_cost += source_cost

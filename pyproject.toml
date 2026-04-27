@@ -63,3 +63,7 @@ files = ["src/pkm"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+addopts = "-m 'not llm'"
+markers = [
+    "llm: tests requiring live LLM API calls (skipped by default)",
+]

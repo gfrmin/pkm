@@ -415,6 +415,49 @@ def test_post_validate_catches_start_ge_end() -> None:
         producer.post_validate(parsed, b"Hello World")
 
 
+def test_post_validate_corrects_near_miss_span() -> None:
+    decl = _make_declaration()
+    producer = EntityExtractionProducer(
+        declaration=decl, client=MagicMock(),
+    )
+    text = "Alice Johnson works at Acme Corp in London."
+    parsed = {
+        "format_version": 1,
+        "entities": [
+            {
+                "text": "Acme Corp",
+                "type": "organization",
+                "span": {"start": 24, "end": 33},
+            },
+        ],
+    }
+    producer.post_validate(parsed, text.encode())
+    assert parsed["entities"][0]["span"]["start"] == 23
+    assert parsed["entities"][0]["span"]["end"] == 32
+
+
+def test_post_validate_corrects_wildly_off_span() -> None:
+    """Global fallback finds entity text when offset is far from correct."""
+    decl = _make_declaration()
+    producer = EntityExtractionProducer(
+        declaration=decl, client=MagicMock(),
+    )
+    text = "The CEO Maria Santos reported revenue of $4.2 billion."
+    parsed = {
+        "format_version": 1,
+        "entities": [
+            {
+                "text": "Maria Santos",
+                "type": "person",
+                "span": {"start": 200, "end": 212},
+            },
+        ],
+    }
+    producer.post_validate(parsed, text.encode())
+    assert parsed["entities"][0]["span"]["start"] == 8
+    assert parsed["entities"][0]["span"]["end"] == 20
+
+
 # --- client-side validation catches API-unenforced constraints -----------
 
 
