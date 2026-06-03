@@ -1,0 +1,24 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.claude/
+
+# Personal data lives OUTSIDE this public repo (in $LIFE_AGENT_KB).
+# These defensive entries ensure that if such a directory is ever created
+# in-tree by accident, it cannot be staged. notes/ are run retrospectives =
+# data (relocated to $LIFE_AGENT_KB/notes). See .githooks/pii_check.py.
+notes/
+wiki/
+raw/
+ocr-cache/
+cache/
+*.duckdb
+*.duckdb.wal
+questions.yaml
+FAILURES.md
+eval_log.md
