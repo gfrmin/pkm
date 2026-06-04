@@ -1,5 +1,13 @@
 # pkm
 
+> [!NOTE]
+> **This repository is an archived snapshot. `pkm` now lives in the
+> [`life-agent` monorepo](https://github.com/gfrmin/life-agent) as
+> [`src/pkm`](https://github.com/gfrmin/life-agent/tree/master/src/pkm)**, where it is
+> the memory faculty beneath a wider personal life-management assistant. Active
+> development, issues, and the current SPEC happen there
+> (`docs/pkm/SPEC.md`, `src/pkm/CLAUDE.md`). This repo is kept read-only for history.
+
 A content-addressed extraction cache and catalogue for personal knowledge
 management.
 
